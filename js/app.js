@@ -1,5 +1,5 @@
 import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT } from "./catalog.js";
-import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo } from "./design.js";
+import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule } from "./design.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule } from "./elevation.js";
 import { planHtml } from "./plan.js";
@@ -38,6 +38,17 @@ const scene = new ClosetScene($("#view3d"), {
     else ui.selected = null;
     render();
   },
+  onMenu: (p, x, y) => (p ? openMenu(p, x, y) : closeMenu()),
+  // Live reorder while dragging; returns where the module is now.
+  onDrag: (from, x, z) => {
+    const to = dropTarget(D(), from, x, z);
+    if (to.wall === from.wall && to.index === from.index) return from;
+    moveModule(D(), from, to);
+    ui.selected = to; ui.wall = to.wall;
+    render();
+    return to;
+  },
+  onDragEnd: () => commit(),
 });
 
 // ---- helpers ------------------------------------------------------------------
@@ -64,10 +75,21 @@ function renderSpace() {
     <button class="layout ${d.layout === k ? "on" : ""}" data-layout="${k}">
       <svg viewBox="0 0 48 44"><rect x="2" y="4" width="44" height="38" rx="2" class="room"/>${shapes[k]}</svg>
       <span>${v.name}</span></button>`).join("");
-  const wallInputs = walls().map((k) => `
-    <label class="field"><span>${WALL_NAMES[k]} width</span>
-      <span class="inch"><input type="number" min="15" max="400" step="0.25" value="${d.walls[k].width}" data-wallwidth="${k}"> in</span>
-      <small>${Math.floor(d.walls[k].width / 12)}' ${+(d.walls[k].width % 12).toFixed(2)}"</small></label>`).join("");
+  const wallInputs = walls().map((k) => {
+    const dep = wallDepth(d, k);
+    return `
+    <div class="wallset"><b>${WALL_NAMES[k]}</b>
+      <label class="field"><span>Width</span>
+        <span class="inch"><input type="number" min="15" max="400" step="0.25" value="${d.walls[k].width}" data-wallwidth="${k}"> in</span>
+        <small>${Math.floor(d.walls[k].width / 12)}' ${+(d.walls[k].width % 12).toFixed(2)}"</small></label>
+      <label class="field"><span>Cabinet depth</span>
+        <select data-walldepth="${k}">
+          ${dep === "mixed" ? `<option value="" selected disabled>Mixed</option>` : ""}
+          ${Object.entries(DEPTHS).map(([dk, v]) => `<option value="${dk}" ${dep === dk ? "selected" : ""}>${v.label}</option>`).join("")}
+        </select>
+        <small>${dep === "mixed" ? "Pick one to set every module" : dep === "D" ? "Deep: fits hanging with doors" : "Standard reach-in depth"}</small></label>
+    </div>`;
+  }).join("");
   const cornerInputs = ["left", "right"].filter((s) => walls().includes(s)).map((side) => {
     const c = d.corners[side];
     const opts = [`<option value="">No corner module</option>`, ...CORNERS.flatMap((cc) =>
@@ -195,9 +217,10 @@ function render() {
   $("#motionBtn").hidden = !(ui.look && TOUCH);
   $("#motionBtn").textContent = scene.motion ? "Stop phone motion" : "Use phone motion";
   $("#shotBtn").textContent = ui.shots.length ? `Add view to PDF (${ui.shots.length})` : "Add view to PDF";
-  $("#hint").textContent = ui.view !== "3d" ? "Click a module to select it"
+  $("#hint").textContent = ui.view !== "3d" ? (TOUCH ? "Tap a module to select it" : "Click a module to select it · right-click to change it")
     : ui.look ? (scene.motion ? "Move your phone to look around" : "Drag to look around")
-    : "Drag to turn · scroll or pinch to zoom · click a module to select it";
+    : TOUCH ? "Drag to turn · hold a module to move it or change it"
+    : "Drag a module to move it · right-click it to change it · drag the room to turn";
   document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === ui.view));
 }
 
@@ -218,11 +241,17 @@ $("#panel").addEventListener("click", (e) => {
   }
   if (b.dataset.wallcolor) { d.room.wall = b.dataset.wallcolor; return commit(); }
   if (b.dataset.floor) { d.room.floor = b.dataset.floor; return commit(); }
-  if (b.dataset.wall) { ui.wall = b.dataset.wall; ui.selected = null; return render(); }
+  if (b.dataset.wall) {
+    ui.wall = b.dataset.wall; ui.selected = null;
+    const dep = wallDepth(d, ui.wall);
+    if (dep !== "mixed") ui.depth = dep;
+    return render();
+  }
   if (b.dataset.depth) { ui.depth = b.dataset.depth; return render(); }
   if (b.dataset.style) { ui.style = b.dataset.style; return render(); }
   if (b.dataset.width) { ui.width = +b.dataset.width; return render(); }
   if (b.id === "addBtn") {
+    d.walls[ui.wall].depth = ui.depth;
     d.walls[ui.wall].modules.push({ style: ui.style, w: ui.width, depth: ui.depth, hinge: "L" });
     ui.selected = { wall: ui.wall, index: d.walls[ui.wall].modules.length - 1 };
     return commit();
@@ -233,22 +262,140 @@ $("#panel").addEventListener("click", (e) => {
     return commit();
   }
   const li = b.closest(".mods li");
-  if (li) {
-    const mods = d.walls[ui.wall].modules;
-    const i = +li.dataset.index;
-    const act = b.dataset.act;
-    if (act === "remove") { mods.splice(i, 1); ui.selected = null; }
-    if (act === "left" && i > 0) { [mods[i - 1], mods[i]] = [mods[i], mods[i - 1]]; ui.selected = { wall: ui.wall, index: i - 1 }; }
-    if (act === "right" && i < mods.length - 1) { [mods[i + 1], mods[i]] = [mods[i], mods[i + 1]]; ui.selected = { wall: ui.wall, index: i + 1 }; }
-    if (act === "hinge") mods[i].hinge = mods[i].hinge === "R" ? "L" : "R";
-    return commit();
-  }
+  if (li && b.dataset.act) { modAction({ wall: ui.wall, index: +li.dataset.index }, b.dataset.act); return commit(); }
 });
+$("#panel").addEventListener("contextmenu", (e) => {
+  const li = e.target.closest(".mods li");
+  if (!li) return;
+  e.preventDefault();
+  openMenu({ wall: ui.wall, index: +li.dataset.index }, e.clientX, e.clientY);
+});
+
+// ---- module actions (list buttons and the right-click menu) ------------------------------
+// Returns the module's new place, or null if it was removed.
+function modAction(at, act, value) {
+  const d = D();
+  const mods = d.walls[at.wall].modules;
+  const i = at.index;
+  const m = mods[i];
+  if (!m) return null;
+  let to = { ...at };
+  if (act === "remove") { mods.splice(i, 1); ui.selected = null; return null; }
+  if (act === "left" && i > 0) { [mods[i - 1], mods[i]] = [mods[i], mods[i - 1]]; to.index = i - 1; }
+  if (act === "right" && i < mods.length - 1) { [mods[i + 1], mods[i]] = [mods[i], mods[i + 1]]; to.index = i + 1; }
+  if (act === "hinge") m.hinge = m.hinge === "R" ? "L" : "R";
+  if (act === "dup") { mods.splice(i + 1, 0, { ...m }); to.index = i + 1; }
+  if (act === "towall") { mods.splice(i, 1); d.walls[value].modules.push(m); to = { wall: value, index: d.walls[value].modules.length - 1 }; }
+  if (act === "style") {
+    m.style = value;
+    const s = styleById[value];
+    if (!s.widths.includes(m.w)) m.w = s.widths.reduce((a, w) => (Math.abs(w - m.w) < Math.abs(a - m.w) ? w : a));
+  }
+  if (act === "width") {
+    m.w = +value;
+    if (!styleById[m.style].widths.includes(m.w)) m.style = "5s";
+  }
+  if (act === "depth") {
+    const old = setModuleDepth(m, value);
+    if (old) toast(`${old} isn’t made ${DEPTHS[value].label}, so it became ${styleById[m.style].name.toLowerCase()}.`);
+  }
+  ui.selected = to; ui.wall = to.wall;
+  return to;
+}
+
+// ---- right-click menu ----------------------------------------------------------------------
+let menuAt = null;
+function closeMenu() { $("#ctx").hidden = true; menuAt = null; }
+function openMenu(at, x, y) {
+  menuAt = at;
+  if (!at.corner) { ui.selected = { wall: at.wall, index: at.index }; ui.wall = at.wall; render(); }
+  renderMenu();
+  const el = $("#ctx");
+  el.hidden = false;
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  el.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+}
+function renderMenu() {
+  const d = D();
+  const at = menuAt;
+  if (!at) return;
+  if (at.corner) {
+    const c = d.corners[at.wall];
+    if (!c) return closeMenu();
+    const info = cornerInfo(c);
+    const opts = CORNERS.flatMap((cc) => CORNER_INTERIORS.filter((i) => !i.only || i.only === cc.code).map((i) =>
+      `<option value="${cc.code}|${i.id}" ${c.code === cc.code && c.interior === i.id ? "selected" : ""}>${cc.code} · ${cc.size}" · ${i.name}</option>`)).join("");
+    $("#ctx").innerHTML = `
+      <div class="ctx-head"><b>${info.code}</b><span>${esc(info.name)} · ${money(info.price)}</span></div>
+      <label class="ctx-row"><span>Corner</span><select data-cact="corner">${opts}</select></label>
+      <div class="ctx-acts"><button data-cact="remove" class="danger">Remove corner</button></div>`;
+    return;
+  }
+  const m = d.walls[at.wall].modules[at.index];
+  if (!m) return closeMenu();
+  const info = moduleInfo(m);
+  const st = styleById[m.style];
+  const n = d.walls[at.wall].modules.length;
+  const styleOpts = GROUPS.map((g) => {
+    const list = STYLES.filter((s) => s.group === g && s.depths.includes(m.depth));
+    return list.length ? `<optgroup label="${g}">${list.map((s) => `<option value="${s.id}" ${s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  const widths = WIDTHS.map((w) => `<button class="chip ${w === m.w ? "on" : ""}" data-cact="width" data-v="${w}" ${st.widths.includes(w) ? "" : "disabled"}>${w}"</button>`).join("");
+  const depths = Object.entries(DEPTHS).map(([k, v]) => `<button class="seg ${m.depth === k ? "on" : ""}" data-cact="depth" data-v="${k}">${v.label}</button>`).join("");
+  const otherWalls = walls().filter((k) => k !== at.wall);
+  $("#ctx").innerHTML = `
+    <div class="ctx-head"><b>${info.code}</b><span>${esc(WALL_NAMES[at.wall])} · ${money(info.price)}</span></div>
+    <label class="ctx-row"><span>Style</span><select data-cact="style">${styleOpts}</select></label>
+    <div class="ctx-row"><span>Width</span><div class="chips">${widths}</div></div>
+    <div class="ctx-row"><span>Depth</span><div class="segs">${depths}</div></div>
+    ${st.hinged && m.w <= 24 ? `<div class="ctx-row"><span>Door hinge</span><div class="segs">
+      <button class="seg ${m.hinge !== "R" ? "on" : ""}" data-cact="hinge" data-v="L">Left</button>
+      <button class="seg ${m.hinge === "R" ? "on" : ""}" data-cact="hinge" data-v="R">Right</button></div></div>` : ""}
+    <div class="ctx-acts">
+      <button data-cact="left" ${at.index === 0 ? "disabled" : ""}>‹ Move left</button>
+      <button data-cact="right" ${at.index === n - 1 ? "disabled" : ""}>Move right ›</button>
+      ${otherWalls.map((k) => `<button data-cact="towall" data-v="${k}">To ${WALL_NAMES[k].toLowerCase()}</button>`).join("")}
+      <button data-cact="dup">Duplicate</button>
+      <button data-cact="remove" class="danger">Remove</button>
+    </div>`;
+}
+function menuAct(act, v) {
+  const d = D();
+  if (menuAt.corner) {
+    if (act === "remove") { d.corners[menuAt.wall] = null; closeMenu(); return commit(); }
+    if (act === "corner") { const [code, interior] = v.split("|"); d.corners[menuAt.wall] = { code, interior }; }
+    commit(); return renderMenu();
+  }
+  if (act === "hinge") { const m = d.walls[menuAt.wall].modules[menuAt.index]; if (m.hinge === v || (!m.hinge && v === "L")) return; }
+  const to = modAction(menuAt, act, v);
+  commit();
+  if (!to) return closeMenu();
+  menuAt = to;
+  renderMenu();
+}
+$("#ctx").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-cact]");
+  if (b && !b.disabled) menuAct(b.dataset.cact, b.dataset.v);
+});
+$("#ctx").addEventListener("change", (e) => {
+  if (e.target.dataset.cact) menuAct(e.target.dataset.cact, e.target.value);
+});
+document.addEventListener("pointerdown", (e) => { if (!$("#ctx").hidden && !e.target.closest("#ctx") && !e.target.closest("#view3d")) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+addEventListener("resize", closeMenu);
 
 $("#panel").addEventListener("change", (e) => {
   const t = e.target;
   const d = D();
   if (t.dataset.decor !== undefined) { d.room.decor = t.checked; return commit(); }
+  if (t.dataset.walldepth) {
+    const k = t.dataset.walldepth;
+    const swapped = setWallDepth(d, k, t.value);
+    if (ui.wall === k) ui.depth = t.value;
+    if (swapped.length) toast(`${[...new Set(swapped)].join(", ")} isn’t made ${DEPTHS[t.value].label}, so the nearest style was used.`);
+    return commit();
+  }
   if (t.dataset.wallwidth) {
     const v = Math.max(15, Math.min(400, +t.value || 0));
     d.walls[t.dataset.wallwidth].width = v;
@@ -278,6 +425,12 @@ document.querySelector(".stage-tabs").addEventListener("click", (e) => {
   $("#view3d").hidden = ui.view !== "3d";
   $("#elev").hidden = ui.view === "3d";
   render();
+});
+$("#elev").addEventListener("contextmenu", (e) => {
+  const g = e.target.closest(".mod");
+  if (!g) return;
+  e.preventDefault();
+  openMenu({ wall: g.dataset.wall, index: +g.dataset.index }, e.clientX, e.clientY);
 });
 $("#elev").addEventListener("click", (e) => {
   const g = e.target.closest(".mod");

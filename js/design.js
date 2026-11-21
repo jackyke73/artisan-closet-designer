@@ -73,6 +73,58 @@ export function wallGeometry(design) {
   return geo;
 }
 
+// --- depth -------------------------------------------------------------------
+// Styles that only come in one depth swap to their nearest match.
+const DEPTH_SWAP = { door2hr: "door", glasshr: "glass", "3gdrhr": "3gdr", shoe: "5s" };
+
+// Change one module's depth. Returns the old style name if the style had to change.
+export function setModuleDepth(m, depth) {
+  if (m.depth === depth) return null;
+  let s = styleById[m.style];
+  let swapped = null;
+  if (!s.depths.includes(depth)) {
+    const alt = styleById[DEPTH_SWAP[m.style]] || styleById["5s"];
+    swapped = s.name;
+    m.style = alt.id;
+    s = alt;
+  }
+  m.depth = depth;
+  if (!s.widths.includes(m.w)) m.w = s.widths.reduce((a, w) => (Math.abs(w - m.w) < Math.abs(a - m.w) ? w : a));
+  return swapped;
+}
+
+// "S", "D" or "mixed" for the modules on a wall.
+export function wallDepth(design, k) {
+  const wall = design.walls[k];
+  const set = new Set(wall.modules.map((m) => m.depth));
+  if (set.size > 1) return "mixed";
+  return [...set][0] || wall.depth || "S";
+}
+
+export function setWallDepth(design, k, depth) {
+  const wall = design.walls[k];
+  wall.depth = depth;
+  return wall.modules.map((m) => setModuleDepth(m, depth)).filter(Boolean);
+}
+
+// Where a dragged module would land, from a point on the floor plan (x across, z out from the back wall).
+export function dropTarget(design, from, x, z) {
+  const walls = activeWalls(design);
+  const W = design.walls.back.width;
+  const dist = { back: z, left: x, right: W - x };
+  const wall = walls.reduce((a, k) => (dist[k] < dist[a] ? k : a), walls[0]);
+  const mods = design.walls[wall].modules.filter((_, i) => !(wall === from.wall && i === from.index));
+  const t = wall === "back" ? x : z;
+  let s = wallGeometry(design)[wall].start, index = 0;
+  for (const m of mods) { if (t > s + m.w / 2) index++; s += m.w; }
+  return { wall, index };
+}
+
+export function moveModule(design, from, to) {
+  const [m] = design.walls[from.wall].modules.splice(from.index, 1);
+  design.walls[to.wall].modules.splice(to.index, 0, m);
+}
+
 export function moduleInfo(m) {
   const s = styleById[m.style];
   const parts = s.parts(m.w, m.depth);

@@ -65,9 +65,12 @@ function mulberry(seed) {
 }
 
 export class ClosetScene {
-  constructor(container, { onPick } = {}) {
+  constructor(container, { onPick, onMenu, onDrag, onDragEnd } = {}) {
     this.container = container;
     this.onPick = onPick;
+    this.onMenu = onMenu;
+    this.onDrag = onDrag;
+    this.onDragEnd = onDragEnd;
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }));
     r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     r.shadowMap.enabled = true;
@@ -152,23 +155,100 @@ export class ClosetScene {
     this.camera.updateProjectionMatrix();
   }
 
+  _ray(cx, cy) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    return ray;
+  }
+
+  _pickAt(cx, cy) {
+    for (const hit of this._ray(cx, cy).intersectObjects(this.root.children, true)) {
+      let o = hit.object;
+      while (o && !o.userData.pick) o = o.parent;
+      if (o) return o.userData.pick;
+    }
+    return null;
+  }
+
+  // Point on a plane at cabinet mid-height, as floor-plan x/z.
+  _planePoint(cx, cy) {
+    const p = new THREE.Vector3();
+    return this._ray(cx, cy).ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -40), p) ? p : null;
+  }
+
+  // Mouse: drag a module to move it, right-click for its settings.
+  // Touch: press and hold a module, then drag to move it or let go for its settings.
   _bindPicking() {
     const el = this.renderer.domElement;
-    let down = null;
-    el.addEventListener("pointerdown", (e) => (down = [e.clientX, e.clientY]));
-    el.addEventListener("pointerup", (e) => {
-      if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) return;
-      const rect = el.getBoundingClientRect();
-      const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-      const ray = new THREE.Raycaster();
-      ray.setFromCamera(ndc, this.camera);
-      for (const hit of ray.intersectObjects(this.root.children, true)) {
-        let o = hit.object;
-        while (o && !o.userData.pick) o = o.parent;
-        if (o) return this.onPick?.(o.userData.pick);
+    const box = this.container;
+    let down = null;      // { x, y, button, pick, touch }
+    let drag = null;      // the module being dragged: { wall, index }
+    let armed = false;    // touch: held long enough
+    let holdTimer = null;
+    const canDrag = (p) => p && !p.corner && !this.look;
+    const endDrag = (e) => {
+      clearTimeout(holdTimer);
+      const wasDrag = drag;
+      drag = null; armed = false;
+      this.controls.enabled = !this.motion;
+      el.style.cursor = "";
+      if (wasDrag) this.onDragEnd?.();
+      return wasDrag;
+    };
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
+    box.addEventListener("pointerdown", (e) => {
+      if (e.target !== el) return;
+      this.onMenu?.(null);
+      const pick = this._pickAt(e.clientX, e.clientY);
+      down = { x: e.clientX, y: e.clientY, button: e.button, pick, touch: e.pointerType === "touch" };
+      if (down.touch) {
+        if (!canDrag(pick)) return;
+        holdTimer = setTimeout(() => {
+          armed = true;
+          this.controls.enabled = false;
+          navigator.vibrate?.(12);
+          this.onPick?.(pick);
+        }, 450);
+      } else if (e.button === 0 && canDrag(pick)) {
+        this.controls.enabled = false; // the press is on a module: move it, don't turn the view
       }
-      this.onPick?.(null);
-    });
+    }, true);
+    box.addEventListener("pointermove", (e) => {
+      if (!down) {
+        if (e.pointerType === "mouse" && !this.look) el.style.cursor = canDrag(this._pickAt(e.clientX, e.clientY)) ? "grab" : "";
+        return;
+      }
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      if (down.touch && !armed) { if (moved > 8) clearTimeout(holdTimer); return; }
+      const ok = down.touch ? armed : down.button === 0 && canDrag(down.pick);
+      if (!ok) return;
+      if (!drag && moved > 5) { drag = { ...down.pick }; el.style.cursor = "grabbing"; }
+      if (!drag) return;
+      const p = this._planePoint(e.clientX, e.clientY);
+      if (p) {
+        const to = this.onDrag?.(drag, p.x, p.z);
+        if (to) drag = to;
+      }
+    }, true);
+    const up = (e) => {
+      if (!down) return;
+      const d = down;
+      down = null;
+      const wasArmed = armed;
+      if (endDrag(e)) return;
+      const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+      if (moved > 5) return;
+      if (d.touch && wasArmed) return this.onMenu?.(d.pick, e.clientX, e.clientY);
+      if (d.button === 2) {
+        if (d.pick) { this.onPick?.(d.pick.corner ? null : d.pick); this.onMenu?.(d.pick, e.clientX, e.clientY); }
+        return;
+      }
+      if (d.button === 0) this.onPick?.(d.pick && !d.pick.corner ? d.pick : null);
+    };
+    box.addEventListener("pointerup", up, true);
+    box.addEventListener("pointercancel", () => { down = null; endDrag(); }, true);
   }
 
   snapshot() {
