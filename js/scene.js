@@ -433,29 +433,24 @@ export class ClosetScene {
     floor.position.set(W / 2, 0, floorD / 2);
     g.add(floor);
     const wallH = 100;
-    const back = plane(layout === "reach" ? W + 160 : W, wallH, this.mat.wall);
-    back.position.set(W / 2, wallH / 2, -0.05);
+    const t = design.wallT || 4.5; // wall thickness: the walls grow outward, the room stays the same
+    const slab = (sx, sy, sz, x, y, z) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), this.mat.wall);
+      m.position.set(x, y, z);
+      m.receiveShadow = true;
+      return m;
+    };
+    const backW = layout === "reach" ? W + 160 : W + 2 * t;
+    const back = slab(backW, wallH, t, W / 2, wallH / 2, -t / 2);
     g.add(back);
-    const left = plane(roomD, wallH, this.mat.wall);
-    left.rotation.y = Math.PI / 2;
-    left.position.set(-0.05, wallH / 2, roomD / 2);
-    const right = plane(roomD, wallH, this.mat.wall);
-    right.rotation.y = -Math.PI / 2;
-    right.position.set(W + 0.05, wallH / 2, roomD / 2);
+    const left = slab(t, wallH, roomD, -t / 2, wallH / 2, roomD / 2);
+    const right = slab(t, wallH, roomD, W + t / 2, wallH / 2, roomD / 2);
     if (layout !== "reach" || true) g.add(left);
     if (layout !== "L") g.add(right);
     if (layout === "reach") {
       // header above the closet opening
-      const header = new THREE.Mesh(new THREE.BoxGeometry(W + 160, wallH - 92, 4), this.mat.wall);
-      header.position.set(W / 2, 92 + (wallH - 92) / 2, roomD + 2);
-      header.receiveShadow = true;
-      for (const x of [-40, W + 40]) {
-        const jamb = new THREE.Mesh(new THREE.BoxGeometry(80, wallH, 4), this.mat.wall);
-        jamb.position.set(x, wallH / 2, roomD + 2);
-        jamb.receiveShadow = true;
-        g.add(jamb);
-      }
-      g.add(header);
+      g.add(slab(W + 160, wallH - 92, t, W / 2, 92 + (wallH - 92) / 2, roomD + t / 2));
+      for (const x of [-40 - t / 2, W + 40 + t / 2]) g.add(slab(80 - t, wallH, t, x, wallH / 2, roomD + t / 2));
     }
     if (this.look) this._enclose(g, layout, W, roomD, floorW, floorD, wallH, plane);
     if (this.decor) this._roomDecor(g, layout, W, roomD);

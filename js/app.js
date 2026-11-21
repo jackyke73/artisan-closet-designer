@@ -1,5 +1,5 @@
 import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller } from "./catalog.js";
-import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers } from "./design.js";
+import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T } from "./design.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule } from "./elevation.js";
 import { planHtml } from "./plan.js";
@@ -32,6 +32,7 @@ const MAX_SHOTS = 6;
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 if (fromHash) history.replaceState(null, "", location.pathname);
 
+let dragWarned = false;
 const scene = new ClosetScene($("#view3d"), {
   onPick: (p) => {
     if (p && !p.corner) { ui.selected = p; ui.wall = p.wall; }
@@ -43,20 +44,46 @@ const scene = new ClosetScene($("#view3d"), {
   onDrag: (from, x, z) => {
     const to = dropTarget(D(), from, x, z);
     if (to.wall === from.wall && to.index === from.index) return from;
+    if (to.wall !== from.wall) {
+      const trial = JSON.parse(JSON.stringify(D()));
+      const n0 = collisions(trial).length;
+      moveModule(trial, from, to);
+      if (collisions(trial).length > n0) {
+        if (!dragWarned) { dragWarned = true; toast(`No room on the ${WALL_NAMES[to.wall].toLowerCase()} for that module.`); }
+        return from;
+      }
+    }
     moveModule(D(), from, to);
     ui.selected = to; ui.wall = to.wall;
     render();
     return to;
   },
-  onDragEnd: () => commit(),
+  onDragEnd: () => { dragWarned = false; commit(); },
 });
 
 // ---- helpers ------------------------------------------------------------------
 const D = () => ui.design;
 const walls = () => activeWalls(D());
+// Every change goes through commit(). A change that makes cabinets overlap is undone.
+const snap = () => JSON.stringify({ design: D(), selected: ui.selected, wall: ui.wall });
+let lastGood = null;
 function commit() {
+  const before = lastGood ? collisions(JSON.parse(lastGood).design) : [];
+  const now = collisions(D());
+  const fresh = now.filter((m) => !before.includes(m));
+  if (lastGood && fresh.length) {
+    const s = JSON.parse(lastGood);
+    ui.design = s.design; // keep the wall tab the customer is on
+    const sel = s.selected;
+    ui.selected = sel && ui.design.walls[sel.wall]?.modules[sel.index] ? sel : null;
+    render();
+    toast(`Not placed: ${fresh[0]} Cabinets can’t overlap.`);
+    return false;
+  }
+  lastGood = snap();
   try { localStorage.setItem(STORE_KEY, encode(D())); } catch { /* ignore */ }
   render();
+  return true;
 }
 function icon(look, w) {
   return `<svg viewBox="-2 -6 ${w + 4} ${HEIGHT + 10}" class="mini">${drawModule(0, w, look, "", false)}</svg>`;
@@ -100,7 +127,10 @@ function renderSpace() {
   return `
     <section class="step"><h2><b>1</b>Your space</h2>
       <div class="layouts">${layoutBtns}</div>
-      <div class="fields">${wallInputs}${cornerInputs}</div>
+      <div class="fields">${wallInputs}${cornerInputs}
+        <label class="field"><span>Wall thickness</span>
+          <span class="inch"><input type="number" min="${WALL_T.min}" max="${WALL_T.max}" step="0.25" value="${d.wallT}" data-wallthick> in</span>
+          <small>Drywall over 2×4 studs is about 4.5"</small></label></div>
       <p class="hint">Artisan closets are 90" tall. Measure each wall from corner to corner.</p>
       <h3>Room look <small>pictures only</small></h3>
       <div class="swatches" aria-label="Wall color">${Object.entries(ROOM_WALLS).map(([k, v]) =>
@@ -418,7 +448,7 @@ function menuAct(act, v) {
   }
   if (act === "hinge") { const m = d.walls[menuAt.wall].modules[menuAt.index]; if (m.hinge === v || (!m.hinge && v === "L")) return; }
   const to = modAction(menuAt, act, v);
-  commit();
+  if (!commit()) return renderMenu();
   if (!to) return closeMenu();
   menuAt = to;
   renderMenu();
@@ -438,6 +468,10 @@ $("#panel").addEventListener("change", (e) => {
   const t = e.target;
   const d = D();
   if (t.dataset.decor !== undefined) { d.room.decor = t.checked; return commit(); }
+  if (t.dataset.wallthick !== undefined) {
+    d.wallT = Math.max(WALL_T.min, Math.min(WALL_T.max, +t.value || WALL_T.def));
+    return commit();
+  }
   if (t.dataset.walldepth) {
     const k = t.dataset.walldepth;
     const swapped = setWallDepth(d, k, t.value);
@@ -636,4 +670,5 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 3800);
 }
 
+lastGood = snap();
 render();

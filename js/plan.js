@@ -4,7 +4,7 @@
 import { DEPTHS, cornerByCode } from "./catalog.js";
 import { activeWalls, wallGeometry, moduleInfo, cornerInfo, WALL_NAMES } from "./design.js";
 
-const WALL = 4;       // drawn wall thickness
+let WALL = 4.5;     // drawn wall thickness, set from the design
 const REACH_DEPTH = 30; // drawn depth of a reach-in closet
 
 const n = (v) => +v.toFixed(2);
@@ -47,6 +47,7 @@ function moduleShape(m, info, selected) {
 }
 
 export function planHtml(design, selected) {
+  WALL = design.wallT || 4.5;
   const walls = activeWalls(design);
   const geo = wallGeometry(design);
   const W = design.walls.back.width;

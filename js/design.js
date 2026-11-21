@@ -23,6 +23,7 @@ export const ROOM_FLOORS = {
   carpet: { name: "Carpet", color: "#cdc4b6", grain: false },
 };
 const defaultRoom = () => ({ wall: "white", floor: "oak", decor: true });
+export const WALL_T = { min: 2, max: 12, def: 4.5 }; // room wall thickness, inches (2x4 studs + drywall)
 
 export function defaultDesign() {
   return {
@@ -38,6 +39,7 @@ export function defaultDesign() {
     },
     corners: { left: null, right: null }, // { code, interior }
     room: defaultRoom(),
+    wallT: WALL_T.def,
   };
 }
 
@@ -188,13 +190,50 @@ export function partsList(design) {
 
 export const totalPrice = (design) => lineItems(design).reduce((a, it) => a + it.price, 0);
 
-export function problems(design) {
+// Everything that would make cabinets overlap: a run longer than its wall, or
+// cabinets on different walls (or a corner unit) taking the same floor space.
+export function collisions(design) {
   const out = [];
   const geo = wallGeometry(design);
   for (const [k, g] of Object.entries(geo)) {
-    if (g.free < 0) out.push(`${WALL_NAMES[k]} is over by ${-g.free}". Remove or narrow a module.`);
+    if (g.free < -0.001) out.push(`The ${WALL_NAMES[k].toLowerCase()} would be over by ${+(-g.free).toFixed(2)}".`);
   }
-  return out;
+  const W = design.walls.back.width;
+  const walls = activeWalls(design);
+  const boxes = []; // floor footprints: x across, z out from the back wall
+  for (const side of ["left", "right"]) {
+    const c = walls.includes(side) && design.corners[side];
+    if (!c) continue;
+    const cc = cornerByCode[c.code], dd = DEPTHS[cc.depth].inches, s = cc.size;
+    const label = `the ${side === "left" ? "back-left" : "back-right"} corner`;
+    const x0 = side === "left" ? 0 : W - s;
+    boxes.push({ label, wall: `c${side}`, x: [x0, x0 + s], z: [0, dd] });
+    boxes.push({ label, wall: `c${side}`, x: side === "left" ? [0, dd] : [W - dd, W], z: [0, s] });
+  }
+  for (const k of walls) {
+    let s = geo[k].start;
+    for (const m of design.walls[k].modules) {
+      const d = DEPTHS[m.depth].inches;
+      const label = `${moduleInfo(m).code} on the ${WALL_NAMES[k].toLowerCase()}`;
+      if (k === "back") boxes.push({ label, wall: k, x: [s, s + m.w], z: [0, d] });
+      if (k === "left") boxes.push({ label, wall: k, x: [0, d], z: [s, s + m.w] });
+      if (k === "right") boxes.push({ label, wall: k, x: [W - d, W], z: [s, s + m.w] });
+      s += m.w;
+    }
+  }
+  const hit = (a, b) => a[0] < b[1] - 0.01 && b[0] < a[1] - 0.01;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (a.wall === b.wall) continue;
+      if (hit(a.x, b.x) && hit(a.z, b.z)) out.push(`${a.label[0].toUpperCase()}${a.label.slice(1)} would hit ${b.label}.`);
+    }
+  }
+  return [...new Set(out)];
+}
+
+export function problems(design) {
+  return collisions(design).map((m) => m.replace(" would be ", " is ").replace(" would hit ", " hits ") + " Remove, narrow or move a module.");
 }
 
 // --- share links ---------------------------------------------------------------
@@ -209,6 +248,7 @@ export function decode(text) {
       d.room = { ...defaultRoom(), ...r };
       if (!(d.room.wall in ROOM_WALLS)) d.room.wall = "white";
       if (!(d.room.floor in ROOM_FLOORS)) d.room.floor = "oak";
+      if (!(+d.wallT >= WALL_T.min && +d.wallT <= WALL_T.max)) d.wallT = WALL_T.def;
       return d;
     }
   } catch { /* ignore */ }
