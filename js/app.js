@@ -1,7 +1,8 @@
 import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT } from "./catalog.js";
-import { LAYOUTS, WALL_NAMES, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo } from "./design.js";
+import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo } from "./design.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule } from "./elevation.js";
+import { planHtml } from "./plan.js";
 import { ClosetScene } from "./scene.js";
 
 const SALES_EMAIL = "sales@artisancabinets.co";
@@ -23,7 +24,12 @@ const ui = {
   selected: null,
   doorsOpen: false,
   view: "3d",
+  look: false,
+  sketch: false,
+  shots: [], // extra camera angles for the PDF
 };
+const MAX_SHOTS = 6;
+const TOUCH = matchMedia("(pointer: coarse)").matches;
 if (fromHash) history.replaceState(null, "", location.pathname);
 
 const scene = new ClosetScene($("#view3d"), {
@@ -74,6 +80,12 @@ function renderSpace() {
       <div class="layouts">${layoutBtns}</div>
       <div class="fields">${wallInputs}${cornerInputs}</div>
       <p class="hint">Artisan closets are 90" tall. Measure each wall from corner to corner.</p>
+      <h3>Room look <small>pictures only</small></h3>
+      <div class="swatches" aria-label="Wall color">${Object.entries(ROOM_WALLS).map(([k, v]) =>
+        `<button class="swatch ${d.room.wall === k ? "on" : ""}" data-wallcolor="${k}" title="${v.name} walls"><i style="background:${v.color}"></i><span>${v.name}</span></button>`).join("")}</div>
+      <div class="swatches" aria-label="Floor">${Object.entries(ROOM_FLOORS).map(([k, v]) =>
+        `<button class="swatch ${d.room.floor === k ? "on" : ""}" data-floor="${k}" title="${v.name} floor"><i class="${v.grain ? "grain" : "pile"}" style="background-color:${v.color}"></i><span>${v.name}</span></button>`).join("")}</div>
+      <label class="check"><input type="checkbox" data-decor ${d.room.decor ? "checked" : ""}> Show folded clothes, baskets and a rug</label>
     </section>`;
 }
 
@@ -172,10 +184,20 @@ function renderSummary() {
 function render() {
   $("#panel").innerHTML = renderSpace() + renderModules();
   renderSummary();
-  if (ui.view === "3d") scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected });
+  if (ui.view === "3d") scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
+  else if (ui.view === "plan") $("#elev").innerHTML = planHtml(D(), ui.selected);
   else $("#elev").innerHTML = elevationsHtml(D(), ui.selected);
   $("#doorsBtn").textContent = ui.doorsOpen ? "Close doors" : "Open doors";
-  $("#doorsBtn").hidden = ui.view !== "3d";
+  document.querySelectorAll(".only3d").forEach((b) => b.classList.toggle("off3d", ui.view !== "3d"));
+  $("#lookBtn").textContent = ui.look ? "Back to overview" : "Look around";
+  $("#lookBtn").classList.toggle("active", ui.look);
+  $("#sketchBtn").classList.toggle("active", ui.sketch);
+  $("#motionBtn").hidden = !(ui.look && TOUCH);
+  $("#motionBtn").textContent = scene.motion ? "Stop phone motion" : "Use phone motion";
+  $("#shotBtn").textContent = ui.shots.length ? `Add view to PDF (${ui.shots.length})` : "Add view to PDF";
+  $("#hint").textContent = ui.view !== "3d" ? "Click a module to select it"
+    : ui.look ? (scene.motion ? "Move your phone to look around" : "Drag to look around")
+    : "Drag to turn · scroll or pinch to zoom · click a module to select it";
   document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === ui.view));
 }
 
@@ -194,6 +216,8 @@ $("#panel").addEventListener("click", (e) => {
     if (!walls().includes(ui.wall)) ui.wall = "back";
     return commit();
   }
+  if (b.dataset.wallcolor) { d.room.wall = b.dataset.wallcolor; return commit(); }
+  if (b.dataset.floor) { d.room.floor = b.dataset.floor; return commit(); }
   if (b.dataset.wall) { ui.wall = b.dataset.wall; ui.selected = null; return render(); }
   if (b.dataset.depth) { ui.depth = b.dataset.depth; return render(); }
   if (b.dataset.style) { ui.style = b.dataset.style; return render(); }
@@ -224,6 +248,7 @@ $("#panel").addEventListener("click", (e) => {
 $("#panel").addEventListener("change", (e) => {
   const t = e.target;
   const d = D();
+  if (t.dataset.decor !== undefined) { d.room.decor = t.checked; return commit(); }
   if (t.dataset.wallwidth) {
     const v = Math.max(15, Math.min(400, +t.value || 0));
     d.walls[t.dataset.wallwidth].width = v;
@@ -251,7 +276,7 @@ document.querySelector(".stage-tabs").addEventListener("click", (e) => {
   if (!b) return;
   ui.view = b.dataset.view;
   $("#view3d").hidden = ui.view !== "3d";
-  $("#elev").hidden = ui.view !== "elev";
+  $("#elev").hidden = ui.view === "3d";
   render();
 });
 $("#elev").addEventListener("click", (e) => {
@@ -262,6 +287,37 @@ $("#elev").addEventListener("click", (e) => {
   render();
 });
 $("#doorsBtn").addEventListener("click", () => { ui.doorsOpen = !ui.doorsOpen; render(); });
+$("#lookBtn").addEventListener("click", () => {
+  ui.look = !ui.look;
+  scene.setLook(ui.look);
+  render();
+  if (ui.look) toast(TOUCH ? "Drag to look around, or tap “Use phone motion”." : "Drag to look around the closet.");
+});
+$("#motionBtn").addEventListener("click", async () => {
+  const ok = await scene.setMotion(!scene.motion);
+  if (!ok && !scene.motion && $("#motionBtn").textContent.startsWith("Use")) toast("Motion isn’t available in this browser. Drag to look around instead.");
+  render();
+});
+$("#sketchBtn").addEventListener("click", () => { ui.sketch = !ui.sketch; render(); });
+$("#shotBtn").addEventListener("click", () => {
+  if (ui.shots.length >= MAX_SHOTS) return toast(`Up to ${MAX_SHOTS} views. Remove one in the send window first.`);
+  ui.shots.push(snapshot());
+  render();
+  toast(`View ${ui.shots.length} added. It will be in your PDF and sent with your design.`);
+});
+$("#shotsField").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-shot]");
+  if (!b) return;
+  ui.shots.splice(+b.dataset.shot, 1);
+  renderShots();
+  render();
+});
+function renderShots() {
+  $("#shotsField").innerHTML = ui.shots.length
+    ? `<span class="lbl">Views for your PDF</span><div class="shots">${ui.shots.map((s, i) =>
+        `<figure><img src="${s}" alt="View ${i + 1}"><button type="button" data-shot="${i}" title="Remove this view">×</button></figure>`).join("")}</div>`
+    : `<span class="lbl">Views for your PDF</span><p class="tiny">Tip: use “Add view to PDF” on the 3D view to include more angles. Without it, the current view is used.</p>`;
+}
 $("#snapBtn").addEventListener("click", () => download(snapshot(), "artisan-closet.png"));
 $("#photoBtn").addEventListener("click", () => {
   $("#photoImg").src = snapshot();
@@ -288,15 +344,15 @@ $("#sendBtn").addEventListener("click", openSend);
 
 // ---- send to Artisan ---------------------------------------------------------------------
 function snapshot() {
-  if (ui.view !== "3d") scene.update(D(), { doorsOpen: ui.doorsOpen, selected: null });
-  else scene.update(D(), { doorsOpen: ui.doorsOpen, selected: null });
+  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: null, sketch: ui.sketch });
   const url = scene.snapshot();
-  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected });
+  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
   return url;
 }
 
 function openSend() {
   if (!lineItems(D()).length) return;
+  renderShots();
   $("#sendDlg").showModal();
 }
 
@@ -307,6 +363,8 @@ function summaryText(form) {
     `New closet design from the website`,
     ``,
     `Name: ${form.name}`, `Email: ${form.email}`, `Phone: ${form.phone || "-"}`, `ZIP: ${form.zip || "-"}`,
+    `Installation: ${form.install || "Not sure yet"}`,
+    ui.shots.length ? `Views saved for the PDF: ${ui.shots.length}` : "",
     form.notes ? `Notes: ${form.notes}` : "",
     ``,
     `Layout: ${LAYOUTS[d.layout].name}`,
@@ -328,7 +386,8 @@ function summaryText(form) {
 $("#sendForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const form = Object.fromEntries(new FormData(e.target));
-  const subject = `Closet design: ${form.name} · ${money(totalPrice(D()))}`;
+  const wantsInstall = (form.install || "").startsWith("Yes");
+  const subject = `Closet design: ${form.name} · ${money(totalPrice(D()))}${wantsInstall ? " · installation requested" : ""}`;
   location.href = `mailto:${SALES_EMAIL}?cc=${encodeURIComponent(form.email)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(summaryText(form))}`;
   $("#sendDlg").close();
   toast("Your email app opened with the design. Press send to deliver it to Artisan.");
@@ -338,7 +397,7 @@ document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListen
 
 function printSummary(form) {
   const d = D();
-  const img = snapshot();
+  const imgs = ui.shots.length ? ui.shots : [snapshot()];
   document.querySelector("#printFrame")?.remove();
   const frame = document.createElement("iframe");
   frame.id = "printFrame";
@@ -347,8 +406,9 @@ function printSummary(form) {
   <link rel="stylesheet" href="${new URL("css/app.css", location.href)}"></head><body class="print">
   <header class="print-head"><div class="brand">artisan.</div><div><b>Closet design</b><br>${new Date().toLocaleDateString()}</div></header>
   ${form.name ? `<p>${esc(form.name)} · ${esc(form.email || "")} · ${esc(form.phone || "")}</p>` : ""}
-  <img src="${img}" class="print-shot">
-  <div class="print-elev">${elevationsHtml(d, null)}</div>
+  ${form.install ? `<p><b>Installation:</b> ${esc(form.install)}</p>` : ""}
+  <div class="print-shots ${imgs.length > 1 ? "multi" : ""}">${imgs.map((s) => `<img src="${s}" class="print-shot">`).join("")}</div>
+  <div class="print-elev">${planHtml(d, null)}${elevationsHtml(d, null)}</div>
   <table class="parts"><thead><tr><th>Closet code</th><th>Where</th><th>Description</th><th>MSRP</th></tr></thead><tbody>
   ${lineItems(d).map((it) => `<tr><td>${it.code}</td><td>${esc(it.wall)}</td><td>${esc(it.name)}</td><td>${money(it.price)}</td></tr>`).join("")}
   <tr class="tot"><td colspan="3">Estimated MSRP${PRICES_ARE_SAMPLE ? " (sample prices)" : ""}</td><td>${money(totalPrice(d))}</td></tr></tbody></table>

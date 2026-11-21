@@ -9,6 +9,21 @@ export const LAYOUTS = {
 };
 export const WALL_NAMES = { left: "Left wall", back: "Back wall", right: "Right wall" };
 
+// Room look: colors only change the pictures, not the order.
+export const ROOM_WALLS = {
+  white: { name: "Warm white", color: "#f3efe8" },
+  greige: { name: "Greige", color: "#d9d0c2" },
+  sage: { name: "Sage", color: "#c3cbb8" },
+  charcoal: { name: "Charcoal", color: "#4b4b4d" },
+};
+export const ROOM_FLOORS = {
+  oak: { name: "Light oak", color: "#b9a68c", grain: true },
+  walnut: { name: "Walnut", color: "#6f5442", grain: true },
+  grey: { name: "Grey wash", color: "#a19d96", grain: true },
+  carpet: { name: "Carpet", color: "#cdc4b6", grain: false },
+};
+const defaultRoom = () => ({ wall: "white", floor: "oak", decor: true });
+
 export function defaultDesign() {
   return {
     layout: "reach",
@@ -22,6 +37,7 @@ export function defaultDesign() {
       right: { width: 72, modules: [] },
     },
     corners: { left: null, right: null }, // { code, interior }
+    room: defaultRoom(),
   };
 }
 
@@ -116,7 +132,13 @@ export function encode(design) {
 export function decode(text) {
   try {
     const d = JSON.parse(decodeURIComponent(escape(atob(text))));
-    if (d && d.walls && d.layout in LAYOUTS) return d;
+    if (d && d.walls && d.layout in LAYOUTS) {
+      const r = d.room || {};
+      d.room = { ...defaultRoom(), ...r };
+      if (!(d.room.wall in ROOM_WALLS)) d.room.wall = "white";
+      if (!(d.room.floor in ROOM_FLOORS)) d.room.floor = "oak";
+      return d;
+    }
   } catch { /* ignore */ }
   return null;
 }

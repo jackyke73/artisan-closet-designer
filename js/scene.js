@@ -4,11 +4,30 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, ROOM_WALLS, ROOM_FLOORS } from "./design.js";
 
 const OPEN_ANGLE = 1.75; // about 100 degrees
 const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "#b9a58b", "#e8e4dc", "#5c4b3b", "#7a8a99"];
 const SHOE_COLORS = ["#f2f2f0", "#6b4a2f", "#1d1d1f", "#b08a63", "#e9e6e0"];
+const EYE = 63;           // standing eye height for the look-around view, inches
+const ORBIT_FOV = 38, LOOK_FOV = 74;
+
+function carpetTexture(base) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const g = c.getContext("2d");
+  g.fillStyle = base;
+  g.fillRect(0, 0, 256, 256);
+  const rnd = mulberry(5);
+  for (let i = 0; i < 9000; i++) {
+    g.fillStyle = rnd() < 0.5 ? `rgba(0,0,0,${rnd() * 0.06})` : `rgba(255,255,255,${rnd() * 0.08})`;
+    g.fillRect(rnd() * 256, rnd() * 256, 1.5, 1.5);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
 
 function woodTexture(vertical, base = "#c9a273") {
   const c = document.createElement("canvas");
@@ -87,22 +106,37 @@ export class ClosetScene {
       chrome: new THREE.MeshStandardMaterial({ color: "#d8d8d8", roughness: 0.22, metalness: 0.95 }),
       shoeShelf: new THREE.MeshStandardMaterial({ color: "#3b3b3d", roughness: 0.5, metalness: 0.2 }),
       wall: new THREE.MeshStandardMaterial({ color: "#f3efe8", roughness: 0.95 }),
-      floor: new THREE.MeshStandardMaterial({ map: woodTexture(false, "#b9a68c"), roughness: 0.8 }),
+      ceiling: new THREE.MeshStandardMaterial({ color: "#fbfaf7", roughness: 1 }),
+      basket: new THREE.MeshStandardMaterial({ color: "#a58457", roughness: 0.95 }),
+      rug: new THREE.MeshStandardMaterial({ color: "#e4ddd0", roughness: 1 }),
+      rugEdge: new THREE.MeshStandardMaterial({ color: "#8c7f6c", roughness: 1 }),
+      ottoman: new THREE.MeshStandardMaterial({ color: "#b9ab98", roughness: 0.95 }),
       select: new THREE.LineBasicMaterial({ color: "#e5322d" }),
+      // sketch mode
+      sketchFill: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
+      sketchGlass: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, transparent: true, opacity: 0.12, depthWrite: false }),
+      ink: new THREE.LineBasicMaterial({ color: "#1d1d1d", toneMapped: false }),
+      inkSoft: new THREE.LineBasicMaterial({ color: "#a9a49c", toneMapped: false }),
     };
-    this.mat.floor.map.repeat.set(4, 4);
+    this.floorMats = {};
     this.garmentMats = GARMENT_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }));
     this.shoeMats = SHOE_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.6 }));
 
     this.root = new THREE.Group();
     this.scene.add(this.root);
     this.frameKey = "";
+    this.look = false;     // look-around (first-person) view
+    this.motion = false;   // phone motion drives the look-around view
+    this.sketch = false;
+    this.decor = true;
+    this.eye = new THREE.Vector3(0, EYE, 100);
 
     this._bindPicking();
     new ResizeObserver(() => this._resize()).observe(container);
     this._resize();
     const loop = () => {
-      this.controls.update();
+      if (this.motion && this._orient) this._applyOrientation();
+      else this.controls.update();
       r.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
@@ -114,6 +148,7 @@ export class ClosetScene {
     if (!w || !h) return;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
+    if (this.look) this.camera.fov = this._lookFov();
     this.camera.updateProjectionMatrix();
   }
 
@@ -142,13 +177,15 @@ export class ClosetScene {
   }
 
   // --- build ------------------------------------------------------------------
-  update(design, { doorsOpen = false, selected = null } = {}) {
-    this.root.clear();
+  update(design, { doorsOpen = false, selected = null, sketch = false } = {}) {
+    this._clear();
+    this.sketch = sketch;
+    this.decor = design.room?.decor !== false;
     const walls = activeWalls(design);
     const geo = wallGeometry(design);
     const W = design.walls.back.width;
     const sideLen = walls.length > 1 ? Math.max(...walls.filter((k) => k !== "back").map((k) => design.walls[k].width)) : 30;
-    this._room(design.layout, W, sideLen);
+    this._room(design, W, sideLen);
 
     const place = (k, m, i, s) => {
       const info = moduleInfo(m);
@@ -174,9 +211,99 @@ export class ClosetScene {
       }
     }
 
-    const key = `${design.layout}|${W}|${sideLen}`;
-    if (key !== this.frameKey) { this.frameKey = key; this.frame(W, sideLen, design.layout); }
+    const key = `${design.layout}|${W}|${sideLen}|${this.look}`;
+    this.eye.set(W / 2, EYE, design.layout === "reach" ? 30 + 84 : Math.max(sideLen - 10, 40));
+    if (key !== this.frameKey) {
+      this.frameKey = key;
+      if (this.look) this._placeEye(); else this.frame(W, sideLen, design.layout);
+    }
     this._light(W, sideLen);
+    if (sketch) this._sketchify();
+    this.scene.background.set(sketch ? "#ffffff" : "#ece8e1");
+  }
+
+  _clear() {
+    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    this.root.clear();
+  }
+
+  // ---- look-around view -------------------------------------------------------
+  setLook(on) {
+    if (this.look === on) return;
+    this.look = on;
+    const c = this.controls;
+    this.camera.fov = on ? this._lookFov() : ORBIT_FOV;
+    this.camera.updateProjectionMatrix();
+    c.enableZoom = c.enablePan = !on;
+    c.minDistance = on ? 0 : 30;
+    c.maxDistance = on ? Infinity : 900;
+    c.rotateSpeed = on ? -0.35 : 1;
+    c.minPolarAngle = on ? 0.15 : 0;
+    c.maxPolarAngle = on ? Math.PI - 0.15 : Math.PI / 2 - 0.03;
+    if (!on) this.setMotion(false);
+    this.frameKey = ""; // re-place the camera on the next update
+  }
+
+  // Portrait screens (phones) get a wider view so the closet still fits.
+  _lookFov() {
+    // keep at least an 80-degree horizontal view
+    const v = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40)) / this.camera.aspect);
+    return Math.min(105, Math.max(LOOK_FOV, THREE.MathUtils.radToDeg(v)));
+  }
+
+  _placeEye() {
+    this.camera.position.copy(this.eye);
+    this.controls.target.copy(this.eye).add(new THREE.Vector3(0, -0.012, -0.1));
+    this.camera.quaternion.identity();
+    this.controls.update();
+  }
+
+  // Phone motion: returns false if the browser does not allow it.
+  async setMotion(on) {
+    if (!on) {
+      if (this._onOrient) window.removeEventListener("deviceorientation", this._onOrient);
+      this.motion = false; this._orient = null; this._alpha0 = null;
+      this.controls.enabled = true;
+      if (this.look) this._placeEye();
+      return false;
+    }
+    try {
+      const D = window.DeviceOrientationEvent;
+      if (!D) return false;
+      if (typeof D.requestPermission === "function" && (await D.requestPermission()) !== "granted") return false;
+    } catch { return false; }
+    this._onOrient = (e) => { if (e.alpha != null) this._orient = e; };
+    window.addEventListener("deviceorientation", this._onOrient);
+    this.motion = true;
+    this.controls.enabled = false;
+    return true;
+  }
+
+  _applyOrientation() {
+    const { alpha, beta, gamma } = this._orient;
+    if (this._alpha0 == null) this._alpha0 = alpha;
+    const rad = THREE.MathUtils.degToRad;
+    const screenAngle = rad(screen.orientation?.angle ?? window.orientation ?? 0);
+    const euler = new THREE.Euler(rad(beta), rad(alpha - this._alpha0), -rad(gamma), "YXZ");
+    const q = new THREE.Quaternion().setFromEuler(euler);
+    q.multiply(new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)));
+    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -screenAngle));
+    this.camera.position.copy(this.eye);
+    this.camera.quaternion.copy(q);
+  }
+
+  // ---- sketch mode: white surfaces with ink outlines ------------------------------
+  _sketchify() {
+    const meshes = [];
+    this.root.traverse((o) => { if (o.isMesh) meshes.push(o); });
+    for (const m of meshes) {
+      let soft = false;
+      for (let o = m; o; o = o.parent) if (o.userData.soft) { soft = true; break; }
+      m.material = m.material === this.mat.glass ? this.mat.sketchGlass : this.mat.sketchFill;
+      m.castShadow = m.receiveShadow = false;
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry, 25), soft ? this.mat.inkSoft : this.mat.ink);
+      m.add(edges);
+    }
   }
 
   frame(W, sideLen, layout) {
@@ -198,7 +325,21 @@ export class ClosetScene {
     cam.updateProjectionMatrix();
   }
 
-  _room(layout, W, sideLen) {
+  _floorMat(id) {
+    if (!this.floorMats[id]) {
+      const f = ROOM_FLOORS[id];
+      const map = f.grain ? woodTexture(false, f.color) : carpetTexture(f.color);
+      map.repeat.set(f.grain ? 4 : 8, f.grain ? 4 : 8);
+      this.floorMats[id] = new THREE.MeshStandardMaterial({ map, roughness: f.grain ? 0.75 : 1 });
+    }
+    return this.floorMats[id];
+  }
+
+  _room(design, W, sideLen) {
+    const layout = design.layout;
+    const room = design.room || { wall: "white", floor: "oak", decor: true };
+    this.mat.wall.color.set(ROOM_WALLS[room.wall]?.color || "#f3efe8");
+    this.mat.floor = this._floorMat(room.floor in ROOM_FLOORS ? room.floor : "oak");
     const g = new THREE.Group();
     const roomD = layout === "reach" ? 30 : sideLen;
     const plane = (w, h, mat) => {
@@ -236,7 +377,103 @@ export class ClosetScene {
       }
       g.add(header);
     }
+    if (this.look) this._enclose(g, layout, W, roomD, floorW, floorD, wallH, plane);
+    if (this.decor) this._roomDecor(g, layout, W, roomD);
     this.root.add(g);
+  }
+
+  // In the look-around view, close the room around the viewer (walls behind, ceiling).
+  _enclose(g, layout, W, roomD, floorW, floorD, wallH, plane) {
+    const add = (w, h, rx, ry, x, y, z, mat = this.mat.wall) => {
+      const m = plane(w, h, mat);
+      m.rotation.set(rx, ry, 0);
+      m.position.set(x, y, z);
+      g.add(m);
+    };
+    if (layout === "reach") {
+      const x0 = W / 2 - floorW / 2, x1 = W / 2 + floorW / 2, z0 = roomD + 4, z1 = floorD;
+      add(floorW, wallH, 0, Math.PI, W / 2, wallH / 2, z1);
+      add(z1 - z0, wallH, 0, Math.PI / 2, x0, wallH / 2, (z0 + z1) / 2);
+      add(z1 - z0, wallH, 0, -Math.PI / 2, x1, wallH / 2, (z0 + z1) / 2);
+      add(floorW, floorD, Math.PI / 2, 0, W / 2, wallH, floorD / 2, this.mat.ceiling);
+    } else {
+      const door = 32, side = (W - door) / 2;
+      if (side > 0) {
+        add(side, wallH, 0, Math.PI, side / 2, wallH / 2, roomD);
+        add(side, wallH, 0, Math.PI, W - side / 2, wallH / 2, roomD);
+      }
+      add(Math.min(door, W), wallH - 82, 0, Math.PI, W / 2, 82 + (wallH - 82) / 2, roomD);
+      if (layout === "L") add(roomD, wallH, 0, -Math.PI / 2, W, wallH / 2, roomD / 2);
+      add(W, roomD, Math.PI / 2, 0, W / 2, wallH, roomD / 2, this.mat.ceiling);
+    }
+  }
+
+  // Rug and, in a walk-in, an ottoman.
+  _roomDecor(g, layout, W, roomD) {
+    const d = new THREE.Group();
+    d.userData.soft = true;
+    const rug = (cx, cz, w, l) => {
+      this._box(d, this.mat.rugEdge, [cx - w / 2, cx + w / 2], [0, 0.25], [cz - l / 2, cz + l / 2]).castShadow = false;
+      this._box(d, this.mat.rug, [cx - w / 2 + 2, cx + w / 2 - 2], [0.25, 0.4], [cz - l / 2 + 2, cz + l / 2 - 2]).castShadow = false;
+    };
+    if (layout === "reach") {
+      rug(W / 2, roomD + 42, Math.min(W, 84), 48);
+    } else {
+      const clear = W - 2 * 24 - 12;
+      const len = roomD - 24 - 18;
+      if (clear >= 30 && len >= 30) {
+        const cz = 24 + 6 + len / 2;
+        rug(W / 2, cz, Math.min(clear, 72), Math.min(len, 96));
+        if (clear >= 44 && len >= 44) {
+          const o = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, 16, 40), this.mat.ottoman);
+          o.position.set(W / 2, 8.4, cz);
+          o.castShadow = o.receiveShadow = true;
+          d.add(o);
+        }
+      }
+    }
+    g.add(d);
+  }
+
+  // Folded clothes and baskets on open shelves.
+  _shelfDecor(g, look, w, d, rnd) {
+    if (look.doors === "solid" || look.shoe) return;
+    const shelves = [...(look.shelves || [])].sort((a, b) => a - b);
+    const tops = [TOE + T, ...shelves.map((y) => y + T / 2)];
+    const ceilings = [...shelves.map((y) => y - T / 2), H - T];
+    const dec = new THREE.Group();
+    dec.userData.soft = true;
+    const itemD = Math.min(d - 3, 12);
+    const z1 = d - 1.2, z0 = z1 - itemD;
+    tops.forEach((top, i) => {
+      const ceil = ceilings[i];
+      const gap = ceil - top;
+      if (gap < 7) return;
+      if (look.drawers && top < TOE + DRAWER_ZONE + 1) return;
+      if ((look.rods || []).some((r) => r > top && r <= ceil + 1)) return;
+      if (gap > 16 && rnd() < 0.45) {
+        const n = Math.max(1, Math.floor((w - 2 * T) / 13));
+        const bw = (w - 2 * T - 1.5 * (n + 1)) / n;
+        for (let k = 0; k < n; k++) {
+          const x = T + 1.5 + k * (bw + 1.5);
+          this._box(dec, this.mat.basket, [x, x + bw], [top, top + Math.min(gap - 3, 10)], [z0, z1]);
+        }
+        return;
+      }
+      const n = Math.max(1, Math.floor((w - 2 * T - 2) / 11));
+      const sw = Math.min(10, (w - 2 * T - 2) / n - 1);
+      for (let k = 0; k < n; k++) {
+        if (rnd() < 0.3) continue;
+        const layers = Math.min(Math.floor((gap - 2) / 1.6), 3 + Math.floor(rnd() * 4));
+        const x = T + 1 + k * (sw + 1) + (rnd() - 0.5) * 0.4;
+        for (let l = 0; l < layers; l++) {
+          const mat = this.garmentMats[Math.floor(rnd() * this.garmentMats.length)];
+          const j = (rnd() - 0.5) * 0.5;
+          this._box(dec, mat, [x + j, x + sw + j], [top + l * 1.6, top + (l + 1) * 1.6 - 0.1], [z0, z1]);
+        }
+      }
+    });
+    g.add(dec);
   }
 
   _box(parent, mat, [x0, x1], [y0, y1], [z0, z1]) {
@@ -256,7 +493,10 @@ export class ClosetScene {
     parent.add(m);
   }
 
-  _garments(parent, axis, a0, a1, y, c, span, avail, rnd) {
+  _garments(parent0, axis, a0, a1, y, c, span, avail, rnd) {
+    const parent = new THREE.Group();
+    parent.userData.soft = true;
+    parent0.add(parent);
     const n = Math.floor((a1 - a0 - 2) / 2.3);
     for (let i = 0; i < n; i++) {
       if (rnd() < 0.12) continue;
@@ -295,6 +535,7 @@ export class ClosetScene {
       for (let i = 0; i < 5; i++) {
         const y = 12 + i * 13;
         const tray = new THREE.Group();
+        tray.userData.soft = true;
         tray.position.set(w / 2, y, d / 2);
         tray.rotation.x = 0.26;
         this._box(tray, this.mat.shoeShelf, [-(w / 2 - T), w / 2 - T], [-0.25, 0.25], [-(d / 2 - 1), d / 2 - 1]);
@@ -307,6 +548,8 @@ export class ClosetScene {
         g.add(tray);
       }
     }
+
+    if (this.decor) this._shelfDecor(g, look, w, d, rnd);
 
     let doorBottom = TOE;
     if (look.drawers) {

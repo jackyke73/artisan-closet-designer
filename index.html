@@ -31,16 +31,21 @@
       <div class="stage-tabs">
         <button data-view="3d" class="on">3D view</button>
         <button data-view="elev">Front drawings</button>
+        <button data-view="plan">Floor plan</button>
       </div>
       <div class="stage-tools">
-        <button class="btn ghost sm" id="doorsBtn">Open doors</button>
-        <button class="btn ghost sm" id="snapBtn">Save picture</button>
+        <button class="btn ghost sm only3d" id="lookBtn" title="Stand inside the closet and look around">Look around</button>
+        <button class="btn ghost sm only3d" id="motionBtn" hidden title="Move your phone to look around">Use phone motion</button>
+        <button class="btn ghost sm only3d" id="sketchBtn" title="Show the closet as a line drawing">Sketch</button>
+        <button class="btn ghost sm only3d" id="doorsBtn">Open doors</button>
+        <button class="btn ghost sm only3d" id="shotBtn" title="Add this view to your PDF">Add view to PDF</button>
+        <button class="btn ghost sm only3d" id="snapBtn">Save picture</button>
         <button class="btn dark sm" id="photoBtn">Photo-realistic ✦</button>
       </div>
     </div>
     <div id="view3d" class="view"></div>
     <div id="elev" class="view elev-view" hidden></div>
-    <p class="stage-hint">Drag to turn · scroll or pinch to zoom · click a module to select it</p>
+    <p class="stage-hint" id="hint">Drag to turn · scroll or pinch to zoom · click a module to select it</p>
   </section>
 
   <aside class="summary" id="summary"></aside>
@@ -56,6 +61,12 @@
       <label>Phone<input name="phone" type="tel" autocomplete="tel"></label>
       <label>ZIP code<input name="zip" autocomplete="postal-code"></label>
     </div>
+    <fieldset class="install"><legend>Installation</legend>
+      <label class="radio"><input type="radio" name="install" value="Yes, please quote installation"> I’d like Artisan to arrange installation</label>
+      <label class="radio"><input type="radio" name="install" value="No, I will install it myself"> I’ll install it myself</label>
+      <label class="radio"><input type="radio" name="install" value="Not sure yet" checked> Not sure yet</label>
+    </fieldset>
+    <div class="shots-field" id="shotsField"></div>
     <label>Notes<textarea name="notes" rows="3" placeholder="Ceiling height, door location, timing…"></textarea></label>
     <div class="dlg-actions">
       <button type="button" class="btn ghost" id="printBtn">Download PDF</button>
