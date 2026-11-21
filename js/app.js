@@ -1,5 +1,5 @@
-import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT } from "./catalog.js";
-import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule } from "./design.js";
+import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller } from "./catalog.js";
+import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers } from "./design.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule } from "./elevation.js";
 import { planHtml } from "./plan.js";
@@ -140,10 +140,27 @@ function renderModules() {
   }).join("");
   const preview = moduleInfo({ style: ui.style, w: ui.width, depth: ui.depth, hinge: "L" });
   const fill = fillWidths(Math.max(0, g.free), widths);
+  const fillLeft = +(g.free - fill.reduce((a, w) => a + w, 0)).toFixed(2);
+  const fillFill = fillerPlan(fillLeft) || [];
+  const gapFill = fillerPlan(g.free);
+  const fillerBtn = gapFill && gapFill.length
+    ? `<button class="btn ghost full filler-btn" id="fillerBtn">Close the ${g.free}" gap with ${gapFill.length === 2 ? `two fillers, ${gapFill[1]}" and ${gapFill[0]}" at each end` : `a ${gapFill[0]}" filler`}</button>`
+    : "";
   const list = d.walls[ui.wall].modules.map((m, i) => {
     const info = moduleInfo(m);
     const st = styleById[m.style];
     const sel = ui.selected && ui.selected.wall === ui.wall && ui.selected.index === i;
+    if (st.filler) {
+      return `<li class="${sel ? "sel" : ""} filler-row" data-index="${i}">
+      ${icon(info.look, Math.max(m.w, 3))}
+      <div class="meta"><b>${info.code}</b><span>Filler strip · ${money(info.price)}</span>
+        <div class="row-ctl"><label class="fw">Width <input type="number" min="${FILLER_MIN}" max="${FILLER_MAX}" step="0.25" value="${m.w}" data-act="fwidth"> in</label></div></div>
+      <div class="order">
+        <button class="icon-btn" data-act="left" title="Move left" ${i === 0 ? "disabled" : ""}>‹</button>
+        <button class="icon-btn" data-act="right" title="Move right" ${i === d.walls[ui.wall].modules.length - 1 ? "disabled" : ""}>›</button>
+        <button class="icon-btn del" data-act="remove" title="Remove">×</button>
+      </div></li>`;
+    }
     const widthOpts = st.widths.filter((w) => st.depths.includes(m.depth)).map((w) => `<option ${w === m.w ? "selected" : ""}>${w}</option>`).join("");
     const styleOpts = STYLES.filter((s) => s.depths.includes(m.depth) && s.widths.includes(m.w)).map((s) => `<option value="${s.id}" ${s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     const hinge = st.hinged && m.w <= 24 ? `<button class="mini-btn" data-act="hinge" title="Door hinge side">Hinge ${m.hinge === "R" ? "right" : "left"}</button>` : "";
@@ -172,7 +189,8 @@ function renderModules() {
         <div class="add-info"><b>${preview.code}</b><span>${money(preview.price)} MSRP</span></div>
         <button class="btn primary" id="addBtn">Add to ${WALL_NAMES[ui.wall].toLowerCase()}</button>
       </div>
-      ${fill.length ? `<button class="btn ghost full" id="fillBtn">Fill the rest with ${esc(styleById[ui.style].name.toLowerCase())}: ${fill.map((w) => w + '"').join(" + ")}</button>` : ""}
+      ${fill.length ? `<button class="btn ghost full" id="fillBtn">Fill the rest with ${esc(styleById[ui.style].name.toLowerCase())}: ${fill.map((w) => w + '"').join(" + ")}${fillFill.length ? ` + ${fillFill.map((w) => w + '"').join(" + ")} filler` : ""}</button>` : ""}
+      ${fillerBtn}
       <h3>On this wall</h3>
       ${list ? `<ul class="mods">${list}</ul>` : `<p class="empty">No modules yet. Pick one above and add it.</p>`}
     </section>`;
@@ -259,6 +277,12 @@ $("#panel").addEventListener("click", (e) => {
   if (b.id === "fillBtn") {
     const g = wallGeometry(d)[ui.wall];
     for (const w of fillWidths(g.free, allowedWidths(ui.style, ui.depth))) d.walls[ui.wall].modules.push({ style: ui.style, w, depth: ui.depth, hinge: "L" });
+    addFillers(d, ui.wall);
+    return commit();
+  }
+  if (b.id === "fillerBtn") {
+    const plan = addFillers(d, ui.wall);
+    if (plan?.length) toast(`Filler added. Artisan cuts it to fit on site.`);
     return commit();
   }
   const li = b.closest(".mods li");
@@ -285,6 +309,15 @@ function modAction(at, act, value) {
   if (act === "right" && i < mods.length - 1) { [mods[i + 1], mods[i]] = [mods[i], mods[i + 1]]; to.index = i + 1; }
   if (act === "hinge") m.hinge = m.hinge === "R" ? "L" : "R";
   if (act === "dup") { mods.splice(i + 1, 0, { ...m }); to.index = i + 1; }
+  if (act === "fwidth") m.w = clampFiller(value);
+  if (act === "addfiller") {
+    const free = wallGeometry(d)[at.wall].free;
+    const w = clampFiller(free >= FILLER_MIN ? Math.min(free, 3) : 3);
+    const k = value === "L" ? i : i + 1;
+    mods.splice(k, 0, { style: "filler", w, depth: m.depth, hinge: "L" });
+    to.index = k;
+    if (free < w) toast(`The wall has only ${Math.max(0, free)}" free. Narrow the filler or a module.`);
+  }
   if (act === "towall") { mods.splice(i, 1); d.walls[value].modules.push(m); to = { wall: value, index: d.walls[value].modules.length - 1 }; }
   if (act === "style") {
     m.style = value;
@@ -337,6 +370,20 @@ function renderMenu() {
   const info = moduleInfo(m);
   const st = styleById[m.style];
   const n = d.walls[at.wall].modules.length;
+  const otherWallBtns = walls().filter((k) => k !== at.wall).map((k) => `<button data-cact="towall" data-v="${k}">To ${WALL_NAMES[k].toLowerCase()}</button>`).join("");
+  if (st.filler) {
+    $("#ctx").innerHTML = `
+      <div class="ctx-head"><b>${info.code}</b><span>Filler strip · ${esc(WALL_NAMES[at.wall])} · ${money(info.price)}</span></div>
+      <label class="ctx-row"><span>Width (${FILLER_MIN}–${FILLER_MAX}")</span><input type="number" min="${FILLER_MIN}" max="${FILLER_MAX}" step="0.25" value="${m.w}" data-cact="fwidth"></label>
+      <p class="ctx-note">Fillers close the gap between the modules and a wall. Artisan cuts them to fit on site.</p>
+      <div class="ctx-acts">
+        <button data-cact="left" ${at.index === 0 ? "disabled" : ""}>‹ Move left</button>
+        <button data-cact="right" ${at.index === n - 1 ? "disabled" : ""}>Move right ›</button>
+        ${otherWallBtns}
+        <button data-cact="remove" class="danger">Remove</button>
+      </div>`;
+    return;
+  }
   const styleOpts = GROUPS.map((g) => {
     const list = STYLES.filter((s) => s.group === g && s.depths.includes(m.depth));
     return list.length ? `<optgroup label="${g}">${list.map((s) => `<option value="${s.id}" ${s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</optgroup>` : "";
@@ -357,6 +404,8 @@ function renderMenu() {
       <button data-cact="right" ${at.index === n - 1 ? "disabled" : ""}>Move right ›</button>
       ${otherWalls.map((k) => `<button data-cact="towall" data-v="${k}">To ${WALL_NAMES[k].toLowerCase()}</button>`).join("")}
       <button data-cact="dup">Duplicate</button>
+      <button data-cact="addfiller" data-v="L">+ Filler left</button>
+      <button data-cact="addfiller" data-v="R">+ Filler right</button>
       <button data-cact="remove" class="danger">Remove</button>
     </div>`;
 }
@@ -414,6 +463,7 @@ $("#panel").addEventListener("change", (e) => {
       if (!styleById[m.style].widths.includes(m.w)) m.style = "5s";
     }
     if (t.dataset.act === "style") m.style = t.value;
+    if (t.dataset.act === "fwidth") m.w = clampFiller(t.value);
     return commit();
   }
 });

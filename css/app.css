@@ -171,6 +171,16 @@ h2, h3 { margin: 0; }
 .elev svg { width: 100%; max-height: 62vh; display: block; }
 :is(.elev, .mini) .carcass { fill: #f7f1e8; stroke: var(--ink); stroke-width: .5; }
 :is(.elev, .mini) .carcass.sel { stroke: var(--red); stroke-width: 1.2; }
+:is(.elev, .mini) .carcass.filler { fill: #ead9c0; }
+:is(.elev, .mini) .carcass.filler.sel { stroke: var(--red); stroke-width: 1.2; }
+.elev .fill-label { font-size: 2.6px; letter-spacing: .3em; text-anchor: middle; dominant-baseline: middle; fill: #8b7a62; }
+.plan .box.filler { fill: #c9b293; }
+.plan .fillzone { fill: rgba(201,178,147,.18); stroke: none; }
+.fw { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.fw input { width: 64px; border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; font-size: 12px; }
+.filler-btn { margin-top: 6px; }
+.ctx-row input { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; width: 100%; }
+.ctx-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
 .elev .mod { cursor: pointer; }
 :is(.elev, .mini) .thin { stroke: var(--ink); stroke-width: .25; }
 :is(.elev, .mini) .shelf { stroke: #8a6a45; stroke-width: .75; }

@@ -126,7 +126,20 @@ export const STYLES = [
 ];
 
 export const GROUPS = ["Shelving", "Hanging", "Doors", "Glass doors", "Drawers", "Shoes"];
-export const styleById = Object.fromEntries(STYLES.map((s) => [s.id, s]));
+
+// Filler strip: closes a gap between the modules and a wall. Cut to any width up to 6".
+// PART NUMBER IS A PLACEHOLDER until Artisan confirms its filler part.
+export const FILLER_MIN = 0.5, FILLER_MAX = 6;
+export const FILLER_PART = 'Filler 6" x 90" (cut to fit)';
+export const FILLER = {
+  id: "filler", group: "Filler", name: "Filler strip", filler: true,
+  depths: ["S", "D"], widths: [],
+  code: (w) => `FILLER ${+w.toFixed(2)}"`,
+  parts: () => [[FILLER_PART, 1]],
+  look: () => ({ filler: true }),
+};
+export const styleById = Object.fromEntries([...STYLES, FILLER].map((s) => [s.id, s]));
+export const clampFiller = (w) => Math.min(FILLER_MAX, Math.max(FILLER_MIN, Math.round((+w || 0) * 4) / 4));
 
 // Easy-reach corner modules (catalog p.5): an L footprint of size x size.
 export const CORNERS = [

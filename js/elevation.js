@@ -13,6 +13,10 @@ function fmt(inches) {
 export function drawModule(x, w, look, code, selected) {
   const s = [];
   const y = (v) => H - v; // svg y from floor height
+  if (look.filler) {
+    return `<rect x="${x}" y="${y(H)}" width="${w}" height="${H}" class="carcass filler${selected ? " sel" : ""}"/>` +
+      `<text x="${x + w / 2}" y="${y(H / 2)}" class="fill-label" transform="rotate(-90 ${x + w / 2} ${y(H / 2)})">FILLER</text>`;
+  }
   s.push(`<rect x="${x}" y="${y(H)}" width="${w}" height="${H}" class="carcass${selected ? " sel" : ""}"/>`);
   s.push(`<line x1="${x}" x2="${x + w}" y1="${y(TOE)}" y2="${y(TOE)}" class="thin"/>`);
   const doorBottom = look.drawers ? TOE + DRAWER_ZONE : TOE;

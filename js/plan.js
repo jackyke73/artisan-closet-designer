@@ -26,6 +26,8 @@ function moduleShape(m, info, selected) {
   const d = DEPTHS[m.depth].inches;
   const w = m.w;
   const look = info.look;
+  if (look.filler) return `<rect x="0" y="${d - 0.75}" width="${w}" height="0.75" class="box filler${selected ? " sel" : ""}"/>` +
+    `<rect x="0" y="0" width="${w}" height="${d}" class="fillzone"/>`;
   const s = [`<rect x="0" y="0" width="${w}" height="${d}" class="box${selected ? " sel" : ""}"/>`];
   if (look.rods?.length) s.push(`<line x1="1" x2="${w - 1}" y1="${Math.min(d / 2, 11)}" y2="${Math.min(d / 2, 11)}" class="rod"/>`);
   if (look.doors) {

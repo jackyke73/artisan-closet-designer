@@ -1,5 +1,5 @@
 // The design: room, walls, modules, corners. Pure data and math, no DOM.
-import { DEPTHS, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS } from "./catalog.js";
+import { DEPTHS, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS, FILLER_MAX, FILLER_MIN, clampFiller } from "./catalog.js";
 import { priceOf } from "./pricing.js";
 
 export const LAYOUTS = {
@@ -89,7 +89,7 @@ export function setModuleDepth(m, depth) {
     s = alt;
   }
   m.depth = depth;
-  if (!s.widths.includes(m.w)) m.w = s.widths.reduce((a, w) => (Math.abs(w - m.w) < Math.abs(a - m.w) ? w : a));
+  if (!s.filler && !s.widths.includes(m.w)) m.w = s.widths.reduce((a, w) => (Math.abs(w - m.w) < Math.abs(a - m.w) ? w : a));
   return swapped;
 }
 
@@ -118,6 +118,26 @@ export function dropTarget(design, from, x, z) {
   let s = wallGeometry(design)[wall].start, index = 0;
   for (const m of mods) { if (t > s + m.w / 2) index++; s += m.w; }
   return { wall, index };
+}
+
+// Fillers that close the gap left on a wall: one at the end, or one at each end if the gap is over 6".
+// Returns the fillers' widths, or null if the gap is too big for fillers.
+export function fillerPlan(free) {
+  const f = Math.floor(free * 4) / 4;
+  if (f < FILLER_MIN) return [];
+  if (f <= FILLER_MAX) return [f];
+  if (f <= 2 * FILLER_MAX) { const a = Math.floor((f / 2) * 4) / 4; return [a, +(f - a).toFixed(2)]; }
+  return null;
+}
+export function addFillers(design, k) {
+  const wall = design.walls[k];
+  const plan = fillerPlan(wallGeometry(design)[k].free);
+  if (!plan || !plan.length) return plan;
+  const depth = wallDepth(design, k) === "D" ? "D" : "S";
+  const make = (w) => ({ style: "filler", w: clampFiller(w), depth, hinge: "L" });
+  if (plan.length === 2) wall.modules.unshift(make(plan[1]));
+  wall.modules.push(make(plan[0]));
+  return plan;
 }
 
 export function moveModule(design, from, to) {

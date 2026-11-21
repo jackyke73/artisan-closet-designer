@@ -592,6 +592,12 @@ export class ClosetScene {
   _module(look, w, d, { hinge, doorsOpen, seed }) {
     const g = new THREE.Group();
     const { oakV, oakH, black, glass } = this.mat;
+    if (look.filler) {
+      // a flat strip flush with the module fronts, with a short return to the wall
+      this._box(g, oakV, [0, w], [0, H], [d - T, d]);
+      this._box(g, oakV, [w / 2 - T / 2, w / 2 + T / 2], [0, H], [0, d - T]);
+      return g;
+    }
     const rnd = mulberry(seed + w * 7);
     this._box(g, oakV, [0, T], [0, H], [0, d]);
     this._box(g, oakV, [w - T, w], [0, H], [0, d]);
