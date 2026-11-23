@@ -358,6 +358,31 @@ export function collisions(design) {
   return [...new Set(out)];
 }
 
+// Which cabinets are in trouble, for drawing them red: "back:2", "corner:left".
+export function clashSet(design) {
+  const out = new Set();
+  const key = (b) => (b.wall.startsWith("c") && b.index == null ? `corner:${b.wall.slice(1)}` : `${b.wall}:${b.index}`);
+  const geo = wallGeometry(design);
+  for (const [k, g] of Object.entries(geo)) {
+    if (g.free >= -0.001) continue;
+    let s = g.start;
+    design.walls[k].modules.forEach((m, i) => { s += m.w; if (s > g.end + 0.001) out.add(`${k}:${i}`); });
+  }
+  const boxes = footprints(design);
+  if (boxes.length && design.ceiling < HEIGHT) boxes.forEach((b) => out.add(key(b)));
+  const hit = (a, b) => a[0] < b[1] - 0.01 && b[0] < a[1] - 0.01;
+  const all = [...boxes, ...roomBlocks(design)];
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const a = all[i], b = all[j];
+      if (a.wall === b.wall || (!a.cab && !b.cab)) continue;
+      if (hit(a.x, b.x) && hit(a.z, b.z)) { if (a.cab) out.add(key(a)); if (b.cab) out.add(key(b)); }
+    }
+  }
+  if (design.slope && design.ceiling >= HEIGHT) for (const b of boxes) if (lowestCeiling(design, b) < HEIGHT - 0.01) out.add(key(b));
+  return out;
+}
+
 export function problems(design) {
   return collisions(design).map((m) => m.replace(" would be ", " is ").replace(" would hit ", " hits ") + " Move, narrow or remove that module, or change the room.");
 }

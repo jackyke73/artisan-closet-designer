@@ -6,7 +6,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import { fmtIn } from "./units.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet } from "./design.js";
 
 const OPEN_ANGLE = 1.75; // about 100 degrees
 const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "#b9a58b", "#e8e4dc", "#5c4b3b", "#7a8a99"];
@@ -148,6 +148,8 @@ export class ClosetScene {
       dimLine: new THREE.LineBasicMaterial({ color: "#1d1d1d", depthTest: false, transparent: true, opacity: 0.85 }),
       tape: new THREE.LineBasicMaterial({ color: "#e5322d", depthTest: false }),
       tapeDot: new THREE.MeshBasicMaterial({ color: "#e5322d", depthTest: false }),
+      clash: new THREE.MeshBasicMaterial({ color: "#ff2a1f", transparent: true, opacity: 0.32, depthWrite: false, toneMapped: false }),
+      clashLine: new THREE.LineBasicMaterial({ color: "#d1150b", toneMapped: false }),
       // sketch mode
       sketchFill: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
       sketchGlass: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, transparent: true, opacity: 0.12, depthWrite: false }),
@@ -327,6 +329,7 @@ export class ClosetScene {
     const sideLen = roomDepth(design);
     const layout = isWalk(design) ? "walk" : "reach";
     this._room(design, W, sideLen);
+    const clash = clashSet(design);
 
     const place = (k, m, i, s) => {
       const info = moduleInfo(m);
@@ -338,6 +341,7 @@ export class ClosetScene {
       if (k === "right") { g.rotation.y = -Math.PI / 2; g.position.set(W, 0, s); }
       this.root.add(g);
       if (selected && selected.wall === k && selected.index === i) this._outline(g);
+      if (clash.has(`${k}:${i}`)) this._clashMark(g);
     };
     for (const k of walls) {
       let s = geo[k].start;
@@ -349,6 +353,7 @@ export class ClosetScene {
         const g = this._corner(c, side === "right" ? W : null, doorsOpen);
         g.userData.pick = { wall: side, corner: true };
         this.root.add(g);
+        if (clash.has(`corner:${side}`)) this._clashMark(g);
       }
     }
 
@@ -443,6 +448,7 @@ export class ClosetScene {
     const meshes = [];
     this.root.traverse((o) => { if (o.isMesh) meshes.push(o); });
     for (const m of meshes) {
+      if (m.material === this.mat.clash) continue;
       let soft = false;
       for (let o = m; o; o = o.parent) if (o.userData.soft) { soft = true; break; }
       m.material = m.material === this.mat.glass ? this.mat.sketchGlass : this.mat.sketchFill;
@@ -1198,6 +1204,23 @@ export class ClosetScene {
       this._box(g, this.mat.black, hx, [38, 50], [d + T + 0.35, d + T + 0.85]);
     }
     return g;
+  }
+
+  // A see-through red box and a warning tag over a cabinet that overlaps something.
+  _clashMark(group) {
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group).expandByScalar(0.3);
+    const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+    const m = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), this.mat.clash);
+    m.position.copy(c);
+    m.renderOrder = 5;
+    m.raycast = () => {}; // clicks go to the cabinet underneath
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), this.mat.clashLine);
+    edges.raycast = () => {};
+    m.add(edges);
+    this.root.add(m);
+    const tag = this._label("⚠ Overlaps", new THREE.Vector3(c.x, box.max.y + 4, c.z), "clash");
+    this.root.add(tag);
   }
 
   _outline(group) {

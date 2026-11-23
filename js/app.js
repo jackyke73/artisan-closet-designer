@@ -1,5 +1,5 @@
 import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
-import { PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength } from "./design.js";
+import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength } from "./design.js";
 import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule, wallSvg } from "./elevation.js";
@@ -279,12 +279,14 @@ function renderModules() {
   const fillerBtn = gapFill && gapFill.length
     ? `<button class="btn ghost full filler-btn" id="fillerBtn">Close the ${g.free}" gap with ${gapFill.length === 2 ? `two fillers, ${gapFill[1]}" and ${gapFill[0]}" at each end` : `a ${gapFill[0]}" filler`}</button>`
     : "";
+  const clash = clashSet(d);
   const list = d.walls[ui.wall].modules.map((m, i) => {
     const info = moduleInfo(m);
+    const bad = clash.has(`${ui.wall}:${i}`) ? " clash" : "";
     const st = styleById[m.style];
     const sel = ui.selected && ui.selected.wall === ui.wall && ui.selected.index === i;
     if (st.filler) {
-      return `<li class="${sel ? "sel" : ""} filler-row" data-index="${i}">
+      return `<li class="${sel ? "sel" : ""} filler-row${bad}" data-index="${i}">
       ${icon(info.look, Math.max(m.w, 3))}
       <div class="meta"><b>${info.code}</b><span>Filler strip · ${money(info.price)}</span>
         <div class="row-ctl"><label class="fw">Width <input type="number" min="${FILLER_MIN}" max="${FILLER_MAX}" step="0.25" value="${m.w}" data-act="fwidth"> in</label></div></div>
@@ -299,9 +301,9 @@ function renderModules() {
       STYLES.filter((s) => s.depths.includes(m.depth) && s.widths.includes(m.w)).map((s) => `<option value="${s.id}" ${!m.custom && s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     const hasDoors = m.custom ? m.custom.doors : st.hinged;
     const hinge = hasDoors && m.w <= 24 ? `<button class="mini-btn" data-act="hinge" title="Door hinge side">Hinge ${m.hinge === "R" ? "right" : "left"}</button>` : "";
-    return `<li class="${sel ? "sel" : ""}" data-index="${i}">
+    return `<li class="${sel ? "sel" : ""}${bad}" data-index="${i}">
       ${icon(info.look, m.w)}
-      <div class="meta"><b>${info.code}</b><span>${esc(info.name)} · ${money(info.price)}</span>
+      <div class="meta"><b>${info.code}${bad ? ` <em class="clash-tag">⚠ Overlaps</em>` : ""}</b><span>${esc(info.name)} · ${money(info.price)}</span>
         <div class="row-ctl">
           <select data-act="style">${styleOpts}</select>
           <select data-act="width" title="Width">${widthOpts}</select>${hinge}
@@ -343,7 +345,7 @@ function renderSummary() {
   $("#summary").innerHTML = `
     <div class="total-card"><span>Estimated MSRP</span><b>${money(total)}</b>
       ${PRICES_ARE_SAMPLE ? `<small class="sample">Sample prices for the demo. Final pricing confirmed by Artisan.</small>` : ""}</div>
-    ${warn.map((w) => `<p class="warn">${esc(w)}</p>`).join("")}
+    ${warn.length ? `<div class="warn-box"><b>⚠ ${warn.length === 1 ? "1 problem" : `${warn.length} problems`} to fix before ordering</b>${warn.map((w) => `<p class="warn">${esc(w)}</p>`).join("")}<small>Cabinets in red overlap something. Undo, move or remove them.</small></div>` : ""}
     <button class="btn primary full" id="sendBtn2" ${items.length ? "" : "disabled"}>Send design to Artisan</button>
     <h3>Your closet <small>${items.length} module${items.length === 1 ? "" : "s"}</small></h3>
     <ul class="lines">${items.map((it) => `<li><span><b>${it.code}</b><i>${esc(it.wall)} · ${esc(it.name)}</i></span><em>${money(it.price)}</em></li>`).join("") || `<li class="empty">Nothing added yet.</li>`}</ul>

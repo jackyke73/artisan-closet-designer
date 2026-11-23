@@ -2,7 +2,7 @@
 // Plan coordinates match the 3D view: x runs along the back wall, y (the 3D z)
 // comes out from the back wall into the room.
 import { DEPTHS, HEIGHT, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES, clashSet } from "./design.js";
 
 let WALL = 4.5;     // drawn wall thickness, set from the design
 const REACH_DEPTH = 30; // drawn depth of a reach-in closet
@@ -123,6 +123,7 @@ export function planHtml(design, selected, { grid = false, clear = true } = {}) 
   const reach = !walk;
   const RD = roomDepth(design);
   const out = [];
+  const clash = clashSet(design);
 
   // walls, with gaps for windows and doors
   out.push(wallWithOpenings(design, "back", -WALL, W + WALL, W, RD));
@@ -162,7 +163,7 @@ export function planHtml(design, selected, { grid = false, clear = true } = {}) 
     const mx = (x) => (side === "right" ? W - x : x);
     const pts = [[0, 0], [S, 0], [S, d], [d, d], [d, S], [0, S]].map(([x, y]) => `${mx(x)},${y}`).join(" ");
     const info = cornerInfo(c);
-    out.push(`<polygon points="${pts}" class="box corner"/>`);
+    out.push(`<polygon points="${pts}" class="box corner${clash.has(`corner:${side}`) ? " clash" : ""}"/>`);
     out.push(`<text x="${mx(S / 2)}" y="${d / 2 + 1}" class="code">${info.code}</text>`);
   }
 
@@ -175,7 +176,7 @@ export function planHtml(design, selected, { grid = false, clear = true } = {}) 
       const t = k === "back" ? `translate(${s} 0)`
         : k === "left" ? `matrix(0 -1 1 0 0 ${s + m.w})`
         : `matrix(0 1 -1 0 ${W} ${s})`;
-      out.push(`<g class="mod" data-wall="${k}" data-index="${i}" transform="${t}">${moduleShape(m, info, sel)}</g>`);
+      out.push(`<g class="mod${clash.has(`${k}:${i}`) ? " clash" : ""}" data-wall="${k}" data-index="${i}" transform="${t}">${moduleShape(m, info, sel)}</g>`);
       if (k === "back") out.push(dimH(s, s + m.w, -WALL - 8, `${m.w}"`));
       if (k === "left") out.push(dimV(s, s + m.w, -WALL - 8, `${m.w}"`));
       if (k === "right") out.push(dimV(s, s + m.w, W + WALL + 12, `${m.w}"`));

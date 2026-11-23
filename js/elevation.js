@@ -1,6 +1,6 @@
 // Front elevation of each wall as SVG, with closet codes and dimensions.
 import { HEIGHT as H, TOE, DRAWER_ZONE, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES, clashSet } from "./design.js";
 
 const PAD = { l: 34, r: 14, t: 34, b: 52 };
 
@@ -86,6 +86,7 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   const W = k === "back" ? wall.width : roomDepth(design);
   const parts = [];
   const room = [];
+  const clash = clashSet(design);
   let x = geo.start;
   // corner pieces seen from the front
   const corner = (side) => cornerOn(design, side);
@@ -96,7 +97,7 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
     const size = cornerByCode[c.code].size;
     const info = cornerInfo(c);
     const at = k === "back" ? cx : (k === "left" ? 0 : 0);
-    parts.push(`<g class="corner">${drawModule(at, size, info.look, info.code, false)}</g>`);
+    parts.push(`<g class="corner${clash.has(`corner:${side}`) ? " clash" : ""}">${drawModule(at, size, info.look, info.code, false)}</g>`);
     parts.push(dim(at, at + size, H + 10, `${size}"`));
   }
   if (k !== "back" && !corner(k) && geo.start > 0) {
@@ -106,7 +107,7 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   wall.modules.forEach((m, i) => {
     const info = moduleInfo(m);
     const sel = selected && selected.wall === k && selected.index === i;
-    parts.push(`<g data-wall="${k}" data-index="${i}" class="mod">${drawModule(x, m.w, { ...info.look, hinge: m.hinge }, info.code, sel)}</g>`);
+    parts.push(`<g data-wall="${k}" data-index="${i}" class="mod${clash.has(`${k}:${i}`) ? " clash" : ""}">${drawModule(x, m.w, { ...info.look, hinge: m.hinge }, info.code, sel)}</g>`);
     if ((heights === "all" || sel) && !info.look.filler) parts.push(heightMarks(x, m.w, info.look));
     parts.push(dim(x, x + m.w, H + 10, `${m.w}"`));
     x += m.w;

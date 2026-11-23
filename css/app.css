@@ -424,3 +424,16 @@ details.roomx > summary em { font-style: normal; background: var(--ink); color: 
   .sheet { break-after: page; min-height: 96vh; margin: 0; }
   .sheet:last-child { break-after: auto; }
 }
+
+/* ---- cabinets that overlap something ---- */
+.plan .mod.clash .box, .plan .box.corner.clash { fill: #ffd5d1; stroke: #d1150b; stroke-width: .9; }
+.plan .mod.clash .code { fill: #b3120a; }
+.elev .mod.clash .carcass, .elev .corner.clash .carcass { fill: #ffe0dc; stroke: #d1150b; stroke-width: 1.1; }
+.elev .mod.clash .front { fill: #f7c5bf; }
+.mods li.clash { background: #fdecea; box-shadow: inset 3px 0 0 #d1150b; }
+.clash-tag { font-style: normal; font-size: 11px; color: #b3120a; font-weight: 600; margin-left: 4px; white-space: nowrap; }
+.warn-box { border: 1.5px solid #d1150b; background: #fff6f5; border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; }
+.warn-box > b { color: #b3120a; font-size: 13px; display: block; margin-bottom: 6px; }
+.warn-box .warn { margin: 0 0 6px; }
+.warn-box small { color: var(--muted); font-size: 11px; }
+.dim3d.clash { background: #d1150b; color: #fff; font-weight: 600; }
