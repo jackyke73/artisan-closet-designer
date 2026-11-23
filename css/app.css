@@ -401,7 +401,7 @@ details.roomx > summary em { font-style: normal; background: var(--ink); color: 
 .elev .dim.clear.tight line { stroke: #c0392b; }
 .elev .dim.clear.tight text { fill: #c0392b; }
 .elev .hmark { font-size: 2.4px; fill: #6b5236; font-weight: 600; }
-.elev .hmark.rod { fill: #555; }
+.elev .hm-rod { fill: #555; }
 @media (max-width: 720px) {
   .top .undo .btn { padding: 5px 8px; }
   .top .undo { margin-left: 0; }

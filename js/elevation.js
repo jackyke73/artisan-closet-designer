@@ -76,8 +76,10 @@ function heightMarks(x, w, look) {
   if (!marks.length) return "";
   marks.sort((a, b) => a[0] - b[0]);
   return `<g class="hmarks">${marks.map(([h, kind]) =>
-    // rod labels sit under the rod so they don't collide with the shelf just above
-    `<text x="${x + 1.4}" y="${H - h + (kind === "rod" ? 2.6 : -0.9)}" class="hmark ${kind}">${kind === "rod" ? "rod " : ""}${+h.toFixed(2)}"</text>`).join("")}</g>`;
+    // shelf heights on the left, rod heights on the right, so a shelf just above a rod stays readable
+    kind === "rod"
+      ? `<text x="${x + w - 1.4}" y="${H - h - 0.9}" class="hmark hm-rod" text-anchor="end">rod ${+h.toFixed(2)}"</text>`
+      : `<text x="${x + 1.4}" y="${H - h - 0.9}" class="hmark">${+h.toFixed(2)}"</text>`).join("")}</g>`;
 }
 
 export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
