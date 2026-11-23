@@ -1,5 +1,6 @@
-import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller } from "./catalog.js";
-import { LAYOUTS, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T } from "./design.js";
+import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
+import { PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength } from "./design.js";
+import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule } from "./elevation.js";
 import { planHtml } from "./plan.js";
@@ -67,17 +68,19 @@ const walls = () => activeWalls(D());
 // Every change goes through commit(). A change that makes cabinets overlap is undone.
 const snap = () => JSON.stringify({ design: D(), selected: ui.selected, wall: ui.wall });
 let lastGood = null;
-function commit() {
+// Room changes (walls, ceiling, windows…) are kept with a warning; cabinet changes that clash are undone.
+function commit({ room = false } = {}) {
   const before = lastGood ? collisions(JSON.parse(lastGood).design) : [];
   const now = collisions(D());
   const fresh = now.filter((m) => !before.includes(m));
-  if (lastGood && fresh.length) {
+  if (room && fresh.length) toast(`Heads up: ${fresh[0].replace(" would be ", " is ").replace(" would hit ", " hits ")} Move or remove that module.`);
+  else if (lastGood && fresh.length) {
     const s = JSON.parse(lastGood);
     ui.design = s.design; // keep the wall tab the customer is on
     const sel = s.selected;
     ui.selected = sel && ui.design.walls[sel.wall]?.modules[sel.index] ? sel : null;
     render();
-    toast(`Not placed: ${fresh[0]} Cabinets can’t overlap.`);
+    toast(`Not placed: ${fresh[0]}`);
     return false;
   }
   lastGood = snap();
@@ -91,47 +94,105 @@ function icon(look, w) {
 const inchesLabel = (n) => `${n}" <span>${Math.floor(n / 12)}' ${+(n % 12).toFixed(2)}"</span>`;
 
 // ---- panel: step 1, space -------------------------------------------------------
+const PRESET_ICONS = {
+  reach: `<path d="M6 8h36v6H6z"/>`,
+  Lleft: `<path d="M6 8h36v6H12v26H6z"/>`,
+  Lright: `<path d="M6 8h36v32h-6V14H6z"/>`,
+  U: `<path d="M6 8h36v32h-6V14H12v26H6z"/>`,
+  galley: `<path d="M6 8h6v32H6zM36 8h6v32h-6z"/>`,
+  single: `<path d="M6 8h36v6H6z"/><path d="M20 40h8" class="door"/>`,
+};
+const num = (attrs, v, unit = "in") => `<span class="inch"><input type="number" ${attrs} value="${v}"> ${unit}</span>`;
+const ftIn = (n) => `${Math.floor(n / 12)}' ${+(n % 12).toFixed(2)}"`;
+
 function renderSpace() {
   const d = D();
-  const shapes = {
-    reach: `<path d="M6 8h36v6H6z"/>`,
-    L: `<path d="M6 8h36v6H12v26H6z"/>`,
-    U: `<path d="M6 8h36v32h-6V14H12v26H6z"/>`,
-  };
-  const layoutBtns = Object.entries(LAYOUTS).map(([k, v]) => `
-    <button class="layout ${d.layout === k ? "on" : ""}" data-layout="${k}">
-      <svg viewBox="0 0 48 44"><rect x="2" y="4" width="44" height="38" rx="2" class="room"/>${shapes[k]}</svg>
+  const walk = isWalk(d);
+  const pk = presetKey(d);
+  const presetBtns = Object.entries(PRESETS).map(([k, v]) => `
+    <button class="layout ${pk === k ? "on" : ""}" data-preset="${k}">
+      <svg viewBox="0 0 48 44"><rect x="2" y="4" width="44" height="38" rx="2" class="room"/>${PRESET_ICONS[k]}</svg>
       <span>${v.name}</span></button>`).join("");
-  const wallInputs = walls().map((k) => {
+  const cabChecks = walk ? `<div class="cabwalls"><span>Cabinets on</span>${SIDES.map((k) =>
+    `<label class="check"><input type="checkbox" data-cab="${k}" ${d.cab[k] ? "checked" : ""}> ${WALL_NAMES[k].replace(" wall", "")}</label>`).join("")}</div>` : "";
+  const sizeInputs = `
+    <label class="field"><span>${walk ? "Room width (back wall)" : "Closet width"}</span>
+      ${num(`min="24" max="400" step="0.25" data-roomw`, d.walls.back.width)}<small>${ftIn(d.walls.back.width)}</small></label>
+    ${walk ? `<label class="field"><span>Room depth (side walls)</span>
+      ${num(`min="36" max="400" step="0.25" data-roomd`, d.walls.left.width)}<small>${ftIn(d.walls.left.width)}</small></label>` : ""}
+    <label class="field"><span>Ceiling height</span>
+      ${num(`min="${CEILING.min}" max="${CEILING.max}" step="0.25" data-ceiling`, d.ceiling)}<small>${d.ceiling < HEIGHT ? `<b class="bad">Under the ${HEIGHT}" cabinets</b>` : ftIn(d.ceiling)}</small></label>
+    <label class="field"><span>Wall thickness</span>
+      ${num(`min="${WALL_T.min}" max="${WALL_T.max}" step="0.25" data-wallthick`, d.wallT)}<small>Drywall over 2×4 studs is about 4.5"</small></label>`;
+  const depthInputs = walls().map((k) => {
     const dep = wallDepth(d, k);
-    return `
-    <div class="wallset"><b>${WALL_NAMES[k]}</b>
-      <label class="field"><span>Width</span>
-        <span class="inch"><input type="number" min="15" max="400" step="0.25" value="${d.walls[k].width}" data-wallwidth="${k}"> in</span>
-        <small>${Math.floor(d.walls[k].width / 12)}' ${+(d.walls[k].width % 12).toFixed(2)}"</small></label>
-      <label class="field"><span>Cabinet depth</span>
+    return `<label class="field"><span>${WALL_NAMES[k]} cabinet depth</span>
         <select data-walldepth="${k}">
           ${dep === "mixed" ? `<option value="" selected disabled>Mixed</option>` : ""}
           ${Object.entries(DEPTHS).map(([dk, v]) => `<option value="${dk}" ${dep === dk ? "selected" : ""}>${v.label}</option>`).join("")}
-        </select>
-        <small>${dep === "mixed" ? "Pick one to set every module" : dep === "D" ? "Deep: fits hanging with doors" : "Standard reach-in depth"}</small></label>
-    </div>`;
+        </select></label>`;
   }).join("");
-  const cornerInputs = ["left", "right"].filter((s) => walls().includes(s)).map((side) => {
+  const cornerInputs = walk && d.cab.back ? ["left", "right"].filter((s) => d.cab[s]).map((side) => {
     const c = d.corners[side];
     const opts = [`<option value="">No corner module</option>`, ...CORNERS.flatMap((cc) =>
       CORNER_INTERIORS.filter((i) => !i.only || i.only === cc.code).map((i) =>
         `<option value="${cc.code}|${i.id}" ${c && c.code === cc.code && c.interior === i.id ? "selected" : ""}>${cc.code} · ${cc.size}" ${DEPTHS[cc.depth].label} · ${i.name}</option>`))].join("");
     return `<label class="field wide"><span>${side === "left" ? "Back-left" : "Back-right"} corner</span><select data-corner="${side}">${opts}</select></label>`;
+  }).join("") : "";
+
+  // windows and doors
+  const openWalls = walk ? ["back", "left", "right", "front"] : ["back"];
+  const openRows = d.openings.map((o, i) => {
+    if (!openWalls.includes(o.wall)) return "";
+    const along = o.wall === "left" || o.wall === "right" ? "From back" : "From left";
+    return `<div class="orow" data-oi="${i}">
+      <div class="orow-h"><b>${o.kind === "window" ? "Window" : "Door"}</b>
+        <select data-o="wall">${openWalls.map((k) => `<option value="${k}" ${o.wall === k ? "selected" : ""}>${WALL_NAMES[k]}</option>`).join("")}</select>
+        <button class="icon-btn del" data-delopen="${i}" title="Remove">×</button></div>
+      <div class="orow-f">
+        <label>${along}${num(`step="0.25" min="0" data-o="at"`, o.at)}</label>
+        <label>Width${num(`step="0.25" min="12" data-o="w"`, o.w)}</label>
+        <label>Height${num(`step="0.25" min="12" data-o="h"`, o.h)}</label>
+        ${o.kind === "window" ? `<label>Sill${num(`step="0.25" min="0" data-o="sill"`, o.sill)}</label>`
+          : `<label>Swings<select data-o="swing"><option value="in" ${o.swing !== "out" ? "selected" : ""}>Into the closet</option><option value="out" ${o.swing === "out" ? "selected" : ""}>Out / sliding</option></select></label>`}
+      </div></div>`;
   }).join("");
+  const obRows = d.obstacles.map((b, i) => `<div class="orow" data-bi="${i}">
+      <div class="orow-h"><b>${b.kind === "column" ? "Column" : "Soffit / beam"}</b><button class="icon-btn del" data-delob="${i}" title="Remove">×</button></div>
+      <div class="orow-f">
+        <label>From left${num(`step="0.25" min="0" data-b="x"`, b.x)}</label>
+        <label>From back${num(`step="0.25" min="0" data-b="z"`, b.z)}</label>
+        <label>Width${num(`step="0.25" min="1" data-b="w"`, b.w)}</label>
+        <label>Depth${num(`step="0.25" min="1" data-b="d"`, b.d)}</label>
+        ${b.kind === "soffit" ? `<label>Bottom at${num(`step="0.25" min="40" data-b="bottom"`, b.bottom)}</label>` : ""}
+      </div></div>`).join("");
+  const sl = d.slope;
+  const slopeWalls = walk ? SIDES : SIDES;
+  const slopeRow = `<div class="orow">
+      <div class="orow-h"><b>Sloped ceiling</b>
+        <select data-slope="wall"><option value="">None</option>${slopeWalls.map((k) => `<option value="${k}" ${sl?.wall === k ? "selected" : ""}>Comes down to the ${WALL_NAMES[k].toLowerCase()}</option>`).join("")}</select></div>
+      ${sl ? `<div class="orow-f">
+        <label>Height at that wall${num(`step="0.25" min="24" data-slope="knee"`, sl.knee)}</label>
+        <label>Slope width${num(`step="0.25" min="6" data-slope="run"`, sl.run)}</label>
+      </div><p class="tiny">Attic rooms: the ceiling rises from the low wall to full height over the slope width.</p>` : ""}
+    </div>`;
+  const nRoom = d.openings.filter((o) => openWalls.includes(o.wall)).length + d.obstacles.length + (sl ? 1 : 0);
   return `
     <section class="step"><h2><b>1</b>Your space</h2>
-      <div class="layouts">${layoutBtns}</div>
-      <div class="fields">${wallInputs}${cornerInputs}
-        <label class="field"><span>Wall thickness</span>
-          <span class="inch"><input type="number" min="${WALL_T.min}" max="${WALL_T.max}" step="0.25" value="${d.wallT}" data-wallthick> in</span>
-          <small>Drywall over 2×4 studs is about 4.5"</small></label></div>
-      <p class="hint">Artisan closets are 90" tall. Measure each wall from corner to corner.</p>
+      <div class="layouts six">${presetBtns}</div>
+      ${cabChecks}
+      <div class="fields">${sizeInputs}${depthInputs}${cornerInputs}</div>
+      <details class="roomx" ${ui.roomOpen ? "open" : ""}><summary>Windows, doors, columns and slopes${nRoom ? ` <em>${nRoom}</em>` : ""}</summary>
+        <p class="tiny">Cabinets can’t go over a window (unless its sill is above ${HEIGHT}"), a door or its swing, a column, a low soffit, or a sloped ceiling under ${HEIGHT}".</p>
+        ${openRows}${obRows}${slopeRow}
+        <div class="add-room">
+          <button class="btn ghost sm" data-addopen="window">+ Window</button>
+          <button class="btn ghost sm" data-addopen="door">+ Door</button>
+          <button class="btn ghost sm" data-addob="column">+ Column</button>
+          <button class="btn ghost sm" data-addob="soffit">+ Soffit</button>
+        </div>
+      </details>
+      <p class="hint">Artisan closets are ${HEIGHT}" tall. Measure each wall from corner to corner.</p>
       <h3>Room look <small>pictures only</small></h3>
       <div class="swatches" aria-label="Wall color">${Object.entries(ROOM_WALLS).map(([k, v]) =>
         `<button class="swatch ${d.room.wall === k ? "on" : ""}" data-wallcolor="${k}" title="${v.name} walls"><i style="background:${v.color}"></i><span>${v.name}</span></button>`).join("")}</div>
@@ -144,7 +205,7 @@ function renderSpace() {
 // ---- panel: step 2, modules ---------------------------------------------------------
 function renderModules() {
   const d = D();
-  if (!walls().includes(ui.wall)) ui.wall = "back";
+  if (!walls().includes(ui.wall)) ui.wall = walls()[0];
   const geo = wallGeometry(d);
   const g = geo[ui.wall];
   const tabs = walls().map((k) => {
@@ -153,23 +214,26 @@ function renderModules() {
   }).join("");
   const depthBtns = Object.entries(DEPTHS).map(([k, v]) => `<button class="seg ${ui.depth === k ? "on" : ""}" data-depth="${k}">${v.label}</button>`).join("");
   const available = STYLES.filter((s) => s.depths.includes(ui.depth));
-  if (!available.find((s) => s.id === ui.style)) ui.style = available[0].id;
+  if (ui.style !== "custom" && !available.find((s) => s.id === ui.style)) ui.style = available[0].id;
+  const custom = ui.style === "custom";
   const styleCards = GROUPS.map((grp) => {
     const list = available.filter((s) => s.group === grp);
     if (!list.length) return "";
     return `<div class="group"><h3>${grp}</h3><div class="cards">${list.map((s) => `
       <button class="card ${ui.style === s.id ? "on" : ""}" data-style="${s.id}" title="${esc(s.name)}">
         ${icon(s.look(), 24)}<span>${esc(s.name)}</span></button>`).join("")}</div></div>`;
-  }).join("");
-  const widths = allowedWidths(ui.style, ui.depth);
+  }).join("") + `<div class="group"><h3>Custom</h3><div class="cards">
+      <button class="card ${custom ? "on" : ""}" data-style="custom" title="Choose your own shelves, rods, drawers and doors">
+        ${icon({ shelves: [52, 70], rods: [43], drawers: false }, 24)}<span>Build your own interior</span></button></div></div>`;
+  const widths = custom ? WIDTHS : allowedWidths(ui.style, ui.depth);
   if (!widths.includes(ui.width)) ui.width = widths.find((w) => w <= g.free) || widths[widths.length - 1];
   const widthChips = WIDTHS.map((w) => {
     const ok = widths.includes(w);
     const fits = w <= g.free + 0.001;
     return `<button class="chip ${ui.width === w ? "on" : ""} ${ok && !fits ? "nofit" : ""}" data-width="${w}" ${ok ? "" : "disabled"}>${w}"</button>`;
   }).join("");
-  const preview = moduleInfo({ style: ui.style, w: ui.width, depth: ui.depth, hinge: "L" });
-  const fill = fillWidths(Math.max(0, g.free), widths);
+  const preview = custom ? { code: customCode(ui.width, ui.depth), price: null } : moduleInfo({ style: ui.style, w: ui.width, depth: ui.depth, hinge: "L" });
+  const fill = custom ? [] : fillWidths(Math.max(0, g.free), widths);
   const fillLeft = +(g.free - fill.reduce((a, w) => a + w, 0)).toFixed(2);
   const fillFill = fillerPlan(fillLeft) || [];
   const gapFill = fillerPlan(g.free);
@@ -191,15 +255,18 @@ function renderModules() {
         <button class="icon-btn del" data-act="remove" title="Remove">×</button>
       </div></li>`;
     }
-    const widthOpts = st.widths.filter((w) => st.depths.includes(m.depth)).map((w) => `<option ${w === m.w ? "selected" : ""}>${w}</option>`).join("");
-    const styleOpts = STYLES.filter((s) => s.depths.includes(m.depth) && s.widths.includes(m.w)).map((s) => `<option value="${s.id}" ${s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("");
-    const hinge = st.hinged && m.w <= 24 ? `<button class="mini-btn" data-act="hinge" title="Door hinge side">Hinge ${m.hinge === "R" ? "right" : "left"}</button>` : "";
+    const widthOpts = (m.custom ? WIDTHS : st.widths.filter((w) => st.depths.includes(m.depth))).map((w) => `<option ${w === m.w ? "selected" : ""}>${w}</option>`).join("");
+    const styleOpts = (m.custom ? `<option value="" selected>Custom interior</option>` : "") +
+      STYLES.filter((s) => s.depths.includes(m.depth) && s.widths.includes(m.w)).map((s) => `<option value="${s.id}" ${!m.custom && s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+    const hasDoors = m.custom ? m.custom.doors : st.hinged;
+    const hinge = hasDoors && m.w <= 24 ? `<button class="mini-btn" data-act="hinge" title="Door hinge side">Hinge ${m.hinge === "R" ? "right" : "left"}</button>` : "";
     return `<li class="${sel ? "sel" : ""}" data-index="${i}">
       ${icon(info.look, m.w)}
       <div class="meta"><b>${info.code}</b><span>${esc(info.name)} · ${money(info.price)}</span>
         <div class="row-ctl">
           <select data-act="style">${styleOpts}</select>
           <select data-act="width" title="Width">${widthOpts}</select>${hinge}
+          <button class="mini-btn" data-act="interior" title="Choose shelves, rods, drawers and doors">Interior…</button>
         </div></div>
       <div class="order">
         <button class="icon-btn" data-act="left" title="Move left" ${i === 0 ? "disabled" : ""}>‹</button>
@@ -216,8 +283,8 @@ function renderModules() {
       ${styleCards}
       <h3>Width</h3><div class="chips">${widthChips}</div>
       <div class="add-row">
-        <div class="add-info"><b>${preview.code}</b><span>${money(preview.price)} MSRP</span></div>
-        <button class="btn primary" id="addBtn">Add to ${WALL_NAMES[ui.wall].toLowerCase()}</button>
+        <div class="add-info"><b>${preview.code}</b><span>${custom ? "You choose the interior next" : `${money(preview.price)} MSRP`}</span></div>
+        <button class="btn primary" id="addBtn">${custom ? "Add and design" : `Add to ${WALL_NAMES[ui.wall].toLowerCase()}`}</button>
       </div>
       ${fill.length ? `<button class="btn ghost full" id="fillBtn">Fill the rest with ${esc(styleById[ui.style].name.toLowerCase())}: ${fill.map((w) => w + '"').join(" + ")}${fillFill.length ? ` + ${fillFill.map((w) => w + '"').join(" + ")} filler` : ""}</button>` : ""}
       ${fillerBtn}
@@ -281,12 +348,17 @@ $("#panel").addEventListener("click", (e) => {
     return;
   }
   const d = D();
-  if (b.dataset.layout) {
-    d.layout = b.dataset.layout;
+  if (b.dataset.preset) {
+    applyPreset(d, b.dataset.preset);
     ui.selected = null;
-    if (!walls().includes(ui.wall)) ui.wall = "back";
-    return commit();
+    if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+    return commit({ room: true });
   }
+  if (b.dataset.addopen) { addOpening(b.dataset.addopen); ui.roomOpen = true; return commit({ room: true }); }
+  if (b.dataset.addob) { addObstacle(b.dataset.addob); ui.roomOpen = true; return commit({ room: true }); }
+  if (b.dataset.delopen) { d.openings.splice(+b.dataset.delopen, 1); return commit({ room: true }); }
+  if (b.dataset.delob) { d.obstacles.splice(+b.dataset.delob, 1); return commit({ room: true }); }
+  if (b.dataset.act === "interior") { const li = b.closest(".mods li"); return openInterior({ wall: ui.wall, index: +li.dataset.index }); }
   if (b.dataset.wallcolor) { d.room.wall = b.dataset.wallcolor; return commit(); }
   if (b.dataset.floor) { d.room.floor = b.dataset.floor; return commit(); }
   if (b.dataset.wall) {
@@ -300,9 +372,14 @@ $("#panel").addEventListener("click", (e) => {
   if (b.dataset.width) { ui.width = +b.dataset.width; return render(); }
   if (b.id === "addBtn") {
     d.walls[ui.wall].depth = ui.depth;
-    d.walls[ui.wall].modules.push({ style: ui.style, w: ui.width, depth: ui.depth, hinge: "L" });
-    ui.selected = { wall: ui.wall, index: d.walls[ui.wall].modules.length - 1 };
-    return commit();
+    const custom = ui.style === "custom";
+    const m = { style: custom ? "5s" : ui.style, w: ui.width, depth: ui.depth, hinge: "L" };
+    if (custom) m.custom = customFromLook({ shelves: [52, 70], rods: [43] });
+    d.walls[ui.wall].modules.push(m);
+    const at = { wall: ui.wall, index: d.walls[ui.wall].modules.length - 1 };
+    ui.selected = at;
+    if (commit() && custom) openInterior(at);
+    return;
   }
   if (b.id === "fillBtn") {
     const g = wallGeometry(d)[ui.wall];
@@ -318,12 +395,47 @@ $("#panel").addEventListener("click", (e) => {
   const li = b.closest(".mods li");
   if (li && b.dataset.act) { modAction({ wall: ui.wall, index: +li.dataset.index }, b.dataset.act); return commit(); }
 });
+$("#panel").addEventListener("toggle", (e) => { if (e.target.matches?.("details.roomx")) ui.roomOpen = e.target.open; }, true);
 $("#panel").addEventListener("contextmenu", (e) => {
   const li = e.target.closest(".mods li");
   if (!li) return;
   e.preventDefault();
   openMenu({ wall: ui.wall, index: +li.dataset.index }, e.clientX, e.clientY);
 });
+
+// ---- room features ------------------------------------------------------------------------
+// New windows and doors go where they don't clash with cabinets, if there is such a place.
+function addOpening(kind) {
+  const d = D();
+  const def = OPENING_DEFAULTS[kind];
+  const order = isWalk(d)
+    ? (kind === "door" ? ["front", "left", "right", "back"] : ["left", "right", "back", "front"])
+    : ["back"];
+  const base = collisions(d).length;
+  let pick = null;
+  for (const wall of order) {
+    const L = wallLength(d, wall);
+    if (L < def.w) continue;
+    for (const frac of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+      const o = { wall, kind, ...def, at: +Math.max(0, Math.min(L - def.w, L * frac - def.w / 2)).toFixed(2) };
+      if (d.openings.some((p) => p.wall === wall && p.at < o.at + o.w + 4 && o.at < p.at + p.w + 4)) continue;
+      d.openings.push(o);
+      const ok = collisions(d).length === base;
+      d.openings.pop();
+      if (ok) { pick = o; break; }
+    }
+    if (pick) break;
+  }
+  const wall = order[0];
+  d.openings.push(pick || { wall, kind, ...def, at: +Math.max(0, (wallLength(d, wall) - def.w) / 2).toFixed(2) });
+}
+function addObstacle(kind) {
+  const d = D();
+  const def = OBSTACLE_DEFAULTS[kind];
+  const W = d.walls.back.width;
+  if (kind === "column") d.obstacles.push({ kind, ...def, x: +(W - def.w).toFixed(2), z: 0 });
+  else d.obstacles.push({ kind, ...def, w: Math.min(W, def.w), x: 0, z: 0 });
+}
 
 // ---- module actions (list buttons and the right-click menu) ------------------------------
 // Returns the module's new place, or null if it was removed.
@@ -338,7 +450,7 @@ function modAction(at, act, value) {
   if (act === "left" && i > 0) { [mods[i - 1], mods[i]] = [mods[i], mods[i - 1]]; to.index = i - 1; }
   if (act === "right" && i < mods.length - 1) { [mods[i + 1], mods[i]] = [mods[i], mods[i + 1]]; to.index = i + 1; }
   if (act === "hinge") m.hinge = m.hinge === "R" ? "L" : "R";
-  if (act === "dup") { mods.splice(i + 1, 0, { ...m }); to.index = i + 1; }
+  if (act === "dup") { mods.splice(i + 1, 0, JSON.parse(JSON.stringify(m))); to.index = i + 1; }
   if (act === "fwidth") m.w = clampFiller(value);
   if (act === "addfiller") {
     const free = wallGeometry(d)[at.wall].free;
@@ -350,13 +462,16 @@ function modAction(at, act, value) {
   }
   if (act === "towall") { mods.splice(i, 1); d.walls[value].modules.push(m); to = { wall: value, index: d.walls[value].modules.length - 1 }; }
   if (act === "style") {
+    delete m.custom;
     m.style = value;
     const s = styleById[value];
     if (!s.widths.includes(m.w)) m.w = s.widths.reduce((a, w) => (Math.abs(w - m.w) < Math.abs(a - m.w) ? w : a));
   }
   if (act === "width") {
     m.w = +value;
-    if (!styleById[m.style].widths.includes(m.w)) m.style = "5s";
+    if (m.custom) {
+      if (m.custom.shoe && !CUSTOM_SHOE_WIDTHS.includes(m.w)) { m.custom.shoe = false; toast(`Shoe racks don’t come ${m.w}" wide, so it was taken out.`); }
+    } else if (!styleById[m.style].widths.includes(m.w)) m.style = "5s";
   }
   if (act === "depth") {
     const old = setModuleDepth(m, value);
@@ -365,6 +480,131 @@ function modAction(at, act, value) {
   ui.selected = to; ui.wall = to.wall;
   return to;
 }
+
+// ---- interior editor ------------------------------------------------------------------------
+// Shelves, rods, drawers, shoe rack and doors for one module, all from catalog parts.
+let iv = null; // { at, w, depth, c }
+function openInterior(at) {
+  const m = D().walls[at.wall]?.modules[at.index];
+  if (!m || styleById[m.style].filler) return;
+  closeMenu();
+  iv = { at, w: m.w, depth: m.depth, c: normalizeCustom(m.custom || customFromLook(moduleInfo(m).look)) };
+  renderInterior();
+  $("#interiorDlg").showModal();
+}
+const lockedShelf = (y) => iv.c.drawers && y === DRAWER_TOP;
+function ivGraphic() {
+  const { w, c } = iv;
+  const yy = (v) => HEIGHT - v;
+  const items = [
+    ...c.shelves.map((y, i) => ({ k: "shelves", i, y, locked: lockedShelf(y) })),
+    ...c.rods.map((y, i) => ({ k: "rods", i, y })),
+  ];
+  const doors = c.doors ? `<rect x="0.4" y="0.4" width="${w - 0.8}" height="${HEIGHT - (c.drawers ? DRAWER_TOP : TOE) - 0.4}" class="ivdoor ${c.doors}"/>` : "";
+  return drawModule(0, w, { ...customLook(c), doors: null }, "", false) + doors + items.map((it) =>
+    `<g class="ivh ${it.k}${it.locked ? " locked" : ""}" data-k="${it.k}" data-i="${it.i}">
+      <rect x="-1" y="${yy(it.y) - 1.8}" width="${w + 2}" height="3.6" class="hit"/>
+      <text x="${w + 2.5}" y="${yy(it.y) + 1.1}" class="ivlab">${+it.y.toFixed(2)}"</text></g>`).join("");
+}
+function renderInterior() {
+  const { w, depth, c } = iv;
+  const probs = customProblems(w, depth, c);
+  const info = moduleInfo({ style: "5s", w, depth, custom: c });
+  const parts = info.parts;
+  const price = info.price;
+  const bottom = c.drawers ? "drawers" : c.shoe ? "shoe" : "none";
+  const list = (k, label) => c[k].map((y, i) => lockedShelf(y)
+    ? `<div class="iv-item locked"><span>Shelf over the drawers</span><span>${y}"</span></div>`
+    : `<div class="iv-item"><span>${label}</span>${num(`step="${SNAP}" data-iv="${k}" data-i="${i}"`, y)}<button class="icon-btn del" data-iv="del" data-k="${k}" data-i="${i}" title="Remove">×</button></div>`).join("");
+  $("#ivBody").innerHTML = `
+    <div class="iv-draw"><svg id="ivSvg" viewBox="-4 -5 ${w + 16} ${HEIGHT + 9}"><g id="ivG">${ivGraphic()}</g></svg>
+      <p class="tiny">Drag a shelf or rod to move it. Heights are from the floor.</p></div>
+    <div class="iv-ctl">
+      <div class="ctx-head"><b>${info.code}</b><span>${info.custom ? "" : `Same as the catalog ${esc(info.name.toLowerCase())} · `}${w}" wide · ${DEPTHS[depth].label} · ${money(price)}</span></div>
+      <label class="ctx-row"><span>Start from a catalog style</span><select data-iv="from"><option value="">Choose…</option>
+        ${STYLES.filter((st) => st.depths.includes(depth)).map((st) => `<option value="${st.id}">${esc(st.name)}</option>`).join("")}</select></label>
+      <div class="ctx-row"><span>Doors</span><div class="segs">${[["", "None"], ["solid", "Solid oak"], ["glass", "Glass"]].map(([v, l]) =>
+        `<button class="seg ${(c.doors || "") === v ? "on" : ""}" data-iv="doors" data-v="${v}">${l}</button>`).join("")}</div></div>
+      <div class="ctx-row"><span>Bottom</span><div class="segs">${[["none", "Open"], ["drawers", "3 drawers"], ["shoe", "Shoe rack"]].map(([v, l]) =>
+        `<button class="seg ${bottom === v ? "on" : ""}" data-iv="bottom" data-v="${v}">${l}</button>`).join("")}</div></div>
+      <div class="iv-list"><div class="iv-lh"><b>Shelves</b><button class="btn ghost sm" data-iv="add" data-k="shelves">+ Shelf</button></div>
+        ${list("shelves", "Shelf") || `<p class="tiny">No shelves.</p>`}</div>
+      <div class="iv-list"><div class="iv-lh"><b>Hanging rods</b><button class="btn ghost sm" data-iv="add" data-k="rods">+ Rod</button></div>
+        ${list("rods", "Rod") || `<p class="tiny">No rods.</p>`}</div>
+      ${probs.length ? probs.map((p) => `<p class="warn">${esc(p)}</p>`).join("")
+        : `<p class="ok">Made from ${parts.reduce((a, [, q]) => a + q, 0)} Artisan catalog parts.</p>`}
+    </div>`;
+  $("#ivApply").disabled = probs.length > 0;
+}
+// Put a new shelf or rod in the biggest open space.
+function ivAdd(k) {
+  const c = iv.c;
+  const lo = c.drawers ? DRAWER_TOP : c.shoe ? SHOE_TOP : TOE + T;
+  const marks = [lo, ...c.shelves, ...c.rods, HEIGHT - T].filter((y) => y >= lo).sort((a, b) => a - b);
+  let best = [lo, HEIGHT - T];
+  for (let i = 1; i < marks.length; i++) if (marks[i] - marks[i - 1] > best[1] - best[0]) best = [marks[i - 1], marks[i]];
+  const snap = (v) => Math.round(v / SNAP) * SNAP;
+  const y = k === "rods" && best[1] - 3 - best[0] >= 24 ? snap(best[1] - 3) : snap((best[0] + best[1]) / 2);
+  c[k].push(y);
+  iv.c = normalizeCustom(c);
+}
+$("#ivBody").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-iv]");
+  if (!b) return;
+  const c = iv.c, k = b.dataset.iv;
+  if (k === "doors") c.doors = b.dataset.v || null;
+  if (k === "bottom") {
+    c.drawers = b.dataset.v === "drawers";
+    c.shoe = b.dataset.v === "shoe";
+    if (c.shoe) { c.shelves = c.shelves.filter((y) => y >= SHOE_TOP); c.rods = c.rods.filter((y) => y >= SHOE_TOP + 24); }
+    if (c.drawers) { c.shelves = c.shelves.filter((y) => y > DRAWER_TOP + 1); c.rods = c.rods.filter((y) => y > DRAWER_TOP + 24); }
+  }
+  if (k === "add") ivAdd(b.dataset.k);
+  if (k === "del") c[b.dataset.k].splice(+b.dataset.i, 1);
+  iv.c = normalizeCustom(c);
+  renderInterior();
+});
+$("#ivBody").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset.iv === "from" && t.value) iv.c = customFromLook(styleById[t.value].look());
+  else if (t.dataset.iv === "shelves" || t.dataset.iv === "rods") iv.c[t.dataset.iv][+t.dataset.i] = Math.round((+t.value || 0) / SNAP) * SNAP;
+  else return;
+  iv.c = normalizeCustom(iv.c);
+  renderInterior();
+});
+let ivDrag = null;
+$("#ivBody").addEventListener("pointerdown", (e) => {
+  const h = e.target.closest(".ivh");
+  if (!h || h.classList.contains("locked")) return;
+  const svg = $("#ivSvg");
+  ivDrag = { k: h.dataset.k, i: +h.dataset.i, svg };
+  svg.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+$("#ivBody").addEventListener("pointermove", (e) => {
+  if (!ivDrag) return;
+  const { svg, k, i } = ivDrag;
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+  const y = Math.max(TOE + T + 1, Math.min(HEIGHT - T - 1, Math.round((HEIGHT - p.y) / SNAP) * SNAP));
+  if (iv.c[k][i] === y) return;
+  iv.c[k][i] = y;
+  $("#ivG").innerHTML = ivGraphic();
+});
+const ivDrop = () => { if (!ivDrag) return; ivDrag = null; iv.c = normalizeCustom(iv.c); renderInterior(); };
+$("#ivBody").addEventListener("pointerup", ivDrop);
+$("#ivBody").addEventListener("pointercancel", ivDrop);
+$("#ivApply").addEventListener("click", () => {
+  const m = D().walls[iv.at.wall]?.modules[iv.at.index];
+  if (!m || customProblems(iv.w, iv.depth, iv.c).length) return;
+  m.custom = normalizeCustom(iv.c);
+  $("#interiorDlg").close();
+  ui.selected = iv.at; ui.wall = iv.at.wall;
+  commit();
+  const info = moduleInfo(m);
+  toast(info.custom ? `${info.name}. The parts list is updated.` : `That matches the catalog ${info.name.toLowerCase()}, ${info.code}.`);
+});
 
 // ---- right-click menu ----------------------------------------------------------------------
 let menuAt = null;
@@ -414,19 +654,21 @@ function renderMenu() {
       </div>`;
     return;
   }
-  const styleOpts = GROUPS.map((g) => {
+  const styleOpts = (m.custom ? `<option value="" selected>Custom interior</option>` : "") + GROUPS.map((g) => {
     const list = STYLES.filter((s) => s.group === g && s.depths.includes(m.depth));
-    return list.length ? `<optgroup label="${g}">${list.map((s) => `<option value="${s.id}" ${s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</optgroup>` : "";
+    return list.length ? `<optgroup label="${g}">${list.map((s) => `<option value="${s.id}" ${!m.custom && s.id === m.style ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</optgroup>` : "";
   }).join("");
-  const widths = WIDTHS.map((w) => `<button class="chip ${w === m.w ? "on" : ""}" data-cact="width" data-v="${w}" ${st.widths.includes(w) ? "" : "disabled"}>${w}"</button>`).join("");
+  const widths = WIDTHS.map((w) => `<button class="chip ${w === m.w ? "on" : ""}" data-cact="width" data-v="${w}" ${m.custom || st.widths.includes(w) ? "" : "disabled"}>${w}"</button>`).join("");
+  const hasDoors = m.custom ? m.custom.doors : st.hinged;
   const depths = Object.entries(DEPTHS).map(([k, v]) => `<button class="seg ${m.depth === k ? "on" : ""}" data-cact="depth" data-v="${k}">${v.label}</button>`).join("");
   const otherWalls = walls().filter((k) => k !== at.wall);
   $("#ctx").innerHTML = `
-    <div class="ctx-head"><b>${info.code}</b><span>${esc(WALL_NAMES[at.wall])} · ${money(info.price)}</span></div>
+    <div class="ctx-head"><b>${info.code}</b><span>${m.custom ? esc(info.name) + " · " : ""}${esc(WALL_NAMES[at.wall])} · ${money(info.price)}</span></div>
     <label class="ctx-row"><span>Style</span><select data-cact="style">${styleOpts}</select></label>
+    <button class="btn ghost full sm" data-cact="interior">Customize interior…</button>
     <div class="ctx-row"><span>Width</span><div class="chips">${widths}</div></div>
     <div class="ctx-row"><span>Depth</span><div class="segs">${depths}</div></div>
-    ${st.hinged && m.w <= 24 ? `<div class="ctx-row"><span>Door hinge</span><div class="segs">
+    ${hasDoors && m.w <= 24 ? `<div class="ctx-row"><span>Door hinge</span><div class="segs">
       <button class="seg ${m.hinge !== "R" ? "on" : ""}" data-cact="hinge" data-v="L">Left</button>
       <button class="seg ${m.hinge === "R" ? "on" : ""}" data-cact="hinge" data-v="R">Right</button></div></div>` : ""}
     <div class="ctx-acts">
@@ -447,6 +689,8 @@ function menuAct(act, v) {
     commit(); return renderMenu();
   }
   if (act === "hinge") { const m = d.walls[menuAt.wall].modules[menuAt.index]; if (m.hinge === v || (!m.hinge && v === "L")) return; }
+  if (act === "interior") return openInterior({ ...menuAt });
+  if (act === "style" && !v) return;
   const to = modAction(menuAt, act, v);
   if (!commit()) return renderMenu();
   if (!to) return closeMenu();
@@ -468,9 +712,42 @@ $("#panel").addEventListener("change", (e) => {
   const t = e.target;
   const d = D();
   if (t.dataset.decor !== undefined) { d.room.decor = t.checked; return commit(); }
+  if (t.dataset.cab) {
+    const k = t.dataset.cab;
+    if (!t.checked && walls().length === 1) { t.checked = true; return toast("A walk-in needs cabinets on at least one wall."); }
+    d.cab[k] = t.checked;
+    if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+    ui.selected = null;
+    return commit({ room: true });
+  }
+  if (t.dataset.roomw !== undefined) { d.walls.back.width = Math.max(24, Math.min(400, +t.value || 96)); return commit({ room: true }); }
+  if (t.dataset.roomd !== undefined) { d.walls.left.width = d.walls.right.width = Math.max(36, Math.min(400, +t.value || 72)); return commit({ room: true }); }
+  if (t.dataset.ceiling !== undefined) { d.ceiling = Math.max(CEILING.min, Math.min(CEILING.max, +t.value || CEILING.def)); return commit({ room: true }); }
+  if (t.dataset.slope) {
+    const k = t.dataset.slope;
+    if (k === "wall") d.slope = t.value ? { wall: t.value, knee: d.slope?.knee ?? 48, run: d.slope?.run ?? 36 } : null;
+    else if (d.slope) d.slope[k] = Math.max(k === "knee" ? 24 : 6, Math.min(k === "knee" ? d.ceiling : 400, +t.value || 0));
+    return commit({ room: true });
+  }
+  const orow = t.closest("[data-oi]");
+  if (orow && t.dataset.o) {
+    const o = d.openings[+orow.dataset.oi];
+    const k = t.dataset.o;
+    if (k === "wall" || k === "swing") o[k] = t.value;
+    else o[k] = Math.max(0, +t.value || 0);
+    o.w = Math.max(12, o.w); o.h = Math.max(12, o.h);
+    o.at = Math.min(o.at, Math.max(0, wallLength(d, o.wall) - o.w));
+    return commit({ room: true });
+  }
+  const brow = t.closest("[data-bi]");
+  if (brow && t.dataset.b) {
+    const b = d.obstacles[+brow.dataset.bi];
+    b[t.dataset.b] = Math.max(t.dataset.b === "w" || t.dataset.b === "d" ? 1 : 0, +t.value || 0);
+    return commit({ room: true });
+  }
   if (t.dataset.wallthick !== undefined) {
     d.wallT = Math.max(WALL_T.min, Math.min(WALL_T.max, +t.value || WALL_T.def));
-    return commit();
+    return commit({ room: true });
   }
   if (t.dataset.walldepth) {
     const k = t.dataset.walldepth;
@@ -493,10 +770,9 @@ $("#panel").addEventListener("change", (e) => {
   if (li) {
     const m = d.walls[ui.wall].modules[+li.dataset.index];
     if (t.dataset.act === "width") {
-      m.w = +t.value;
-      if (!styleById[m.style].widths.includes(m.w)) m.style = "5s";
+      modAction({ wall: ui.wall, index: +li.dataset.index }, "width", t.value);
     }
-    if (t.dataset.act === "style") m.style = t.value;
+    if (t.dataset.act === "style" && t.value) { m.style = t.value; delete m.custom; }
     if (t.dataset.act === "fwidth") m.w = clampFiller(t.value);
     return commit();
   }
@@ -604,8 +880,11 @@ function summaryText(form) {
     ui.shots.length ? `Views saved for the PDF: ${ui.shots.length}` : "",
     form.notes ? `Notes: ${form.notes}` : "",
     ``,
-    `Layout: ${LAYOUTS[d.layout].name}`,
-    ...activeWalls(d).map((k) => `${WALL_NAMES[k]}: ${d.walls[k].width}" (${geo[k].free}" left open)`),
+    `Layout: ${layoutName(d)}`,
+    `Room: ${d.walls.back.width}" wide${isWalk(d) ? ` x ${roomDepth(d)}" deep` : ""}, ceiling ${d.ceiling}"${d.slope ? `, sloping down to ${d.slope.knee}" at the ${WALL_NAMES[d.slope.wall].toLowerCase()} over ${d.slope.run}"` : ""}`,
+    ...d.openings.filter((o) => isWalk(d) || o.wall === "back").map((o) => `${o.kind === "window" ? "Window" : "Door"} on the ${WALL_NAMES[o.wall].toLowerCase()}: ${o.w}" x ${o.h}", ${o.at}" from the ${o.wall === "left" || o.wall === "right" ? "back" : "left"}${o.kind === "window" ? `, sill ${o.sill}"` : ""}`),
+    ...d.obstacles.map((b) => `${b.kind === "column" ? "Column" : `Soffit (bottom ${b.bottom}")`}: ${b.w}" x ${b.d}" at ${b.x}" from the left, ${b.z}" from the back`),
+    ...activeWalls(d).map((k) => `${WALL_NAMES[k]} cabinets: ${geo[k].space}" of wall (${geo[k].free}" left open)`),
     ``,
     `MODULES`,
     ...lineItems(d).map((it) => `- ${it.code}  (${it.wall}, ${it.name})  ${money(it.price)}`),

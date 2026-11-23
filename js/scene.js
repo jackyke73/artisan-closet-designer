@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, ROOM_WALLS, ROOM_FLOORS } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS } from "./design.js";
 
 const OPEN_ANGLE = 1.75; // about 100 degrees
 const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "#b9a58b", "#e8e4dc", "#5c4b3b", "#7a8a99"];
@@ -105,6 +105,9 @@ export class ClosetScene {
       oakV: new THREE.MeshStandardMaterial({ map: woodTexture(true, "#c39a68"), roughness: 0.58 }),
       oakH: new THREE.MeshStandardMaterial({ map: woodTexture(false, "#c39a68"), roughness: 0.58 }),
       black: new THREE.MeshStandardMaterial({ color: "#151515", roughness: 0.35, metalness: 0.4 }),
+      window: new THREE.MeshStandardMaterial({ color: "#dfeef5", emissive: "#cfe6f2", emissiveIntensity: 0.55, roughness: 0.1 }),
+      trim: new THREE.MeshStandardMaterial({ color: "#fbfaf6", roughness: 0.6 }),
+      doorLeaf: new THREE.MeshStandardMaterial({ color: "#f4f1ea", roughness: 0.55 }),
       glass: new THREE.MeshPhysicalMaterial({ color: "#cfd8d6", transparent: true, opacity: 0.22, roughness: 0.04, metalness: 0, depthWrite: false }),
       chrome: new THREE.MeshStandardMaterial({ color: "#d8d8d8", roughness: 0.22, metalness: 0.95 }),
       shoeShelf: new THREE.MeshStandardMaterial({ color: "#3b3b3d", roughness: 0.5, metalness: 0.2 }),
@@ -264,7 +267,8 @@ export class ClosetScene {
     const walls = activeWalls(design);
     const geo = wallGeometry(design);
     const W = design.walls.back.width;
-    const sideLen = walls.length > 1 ? Math.max(...walls.filter((k) => k !== "back").map((k) => design.walls[k].width)) : 30;
+    const sideLen = roomDepth(design);
+    const layout = isWalk(design) ? "walk" : "reach";
     this._room(design, W, sideLen);
 
     const place = (k, m, i, s) => {
@@ -283,19 +287,19 @@ export class ClosetScene {
       design.walls[k].modules.forEach((m, i) => { place(k, m, i, s); s += m.w; });
     }
     for (const side of ["left", "right"]) {
-      const c = design.corners[side];
-      if (walls.includes(side) && c) {
+      const c = cornerOn(design, side);
+      if (c) {
         const g = this._corner(c, side === "right" ? W : null, doorsOpen);
         g.userData.pick = { wall: side, corner: true };
         this.root.add(g);
       }
     }
 
-    const key = `${design.layout}|${W}|${sideLen}|${this.look}`;
-    this.eye.set(W / 2, EYE, design.layout === "reach" ? 30 + 84 : Math.max(sideLen - 10, 40));
+    const key = `${layout}|${W}|${sideLen}|${this.look}`;
+    this.eye.set(W / 2, Math.min(EYE, (design.ceiling || 96) - 12), layout === "reach" ? 30 + 84 : Math.max(sideLen - 10, 40));
     if (key !== this.frameKey) {
       this.frameKey = key;
-      if (this.look) this._placeEye(); else this.frame(W, sideLen, design.layout);
+      if (this.look) this._placeEye(); else this.frame(W, sideLen, layout);
     }
     this._light(W, sideLen);
     if (sketch) this._sketchify();
@@ -415,13 +419,14 @@ export class ClosetScene {
     return this.floorMats[id];
   }
 
-  _room(design, W, sideLen) {
-    const layout = design.layout;
+  // Walls are slabs `t` thick that grow outward, so the room keeps its inside size.
+  // Their tops follow the ceiling (including a slope), and windows and doors are cut out.
+  _room(design, W, roomD) {
+    const walk = isWalk(design);
     const room = design.room || { wall: "white", floor: "oak", decor: true };
     this.mat.wall.color.set(ROOM_WALLS[room.wall]?.color || "#f3efe8");
     this.mat.floor = this._floorMat(room.floor in ROOM_FLOORS ? room.floor : "oak");
     const g = new THREE.Group();
-    const roomD = layout === "reach" ? 30 : sideLen;
     const plane = (w, h, mat) => {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
       m.receiveShadow = true;
@@ -432,54 +437,162 @@ export class ClosetScene {
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(W / 2, 0, floorD / 2);
     g.add(floor);
-    const wallH = 100;
-    const t = design.wallT || 4.5; // wall thickness: the walls grow outward, the room stays the same
-    const slab = (sx, sy, sz, x, y, z) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), this.mat.wall);
-      m.position.set(x, y, z);
+    const t = design.wallT || 4.5;
+    const ceil = design.ceiling || 96;
+    const openings = (design.openings || []).filter((o) => (walk ? true : o.wall === "back"));
+
+    // wall k: u runs along the wall (back/front: x, left/right: z), from u0 to u1
+    const heightAt = (k, u) => {
+      const p = { back: [u, 0], front: [u, roomD], left: [0, u], right: [W, u] }[k];
+      return ceilingAt(design, p[0], p[1]);
+    };
+    const wallMesh = (k, u0, u1, top = null) => {
+      const us = [u0, u1];
+      const sl = design.slope;
+      if (sl && top == null) {
+        const run = sl.run;
+        const breaks = { back: { left: [run], right: [W - run] }, front: { left: [run], right: [W - run] }, left: { back: [run] }, right: { back: [run] } }[k]?.[sl.wall] || [];
+        for (const b of breaks) if (b > u0 && b < u1) us.push(b);
+      }
+      us.sort((a, b) => a - b);
+      const h = (u) => (top != null ? top : heightAt(k, Math.min(Math.max(u, k === "back" || k === "front" ? 0 : 0), wallLength(design, k))));
+      const shape = new THREE.Shape();
+      shape.moveTo(u0, 0);
+      shape.lineTo(u1, 0);
+      for (const u of [...us].reverse()) shape.lineTo(u, h(u));
+      shape.closePath();
+      for (const o of openings) {
+        if (o.wall !== k || top != null) continue;
+        const a = Math.max(o.at, u0 + 0.1), b = Math.min(o.at + o.w, u1 - 0.1);
+        const y0 = o.kind === "door" ? 0.01 : o.sill, y1 = Math.min(y0 + o.h, Math.min(h(a), h(b)) - 0.5);
+        if (b - a < 1 || y1 - y0 < 1) continue;
+        const hole = new THREE.Path();
+        hole.moveTo(a, y0); hole.lineTo(b, y0); hole.lineTo(b, y1); hole.lineTo(a, y1); hole.closePath();
+        shape.holes.push(hole);
+      }
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false });
+      const m = new THREE.Mesh(geo, this.mat.wall);
       m.receiveShadow = true;
+      m.castShadow = false;
+      if (k === "back") m.position.set(0, 0, -t);
+      if (k === "front") m.position.set(0, 0, roomD);
+      if (k === "left") { m.rotation.y = -Math.PI / 2; m.position.set(0, 0, 0); }
+      if (k === "right") { m.rotation.y = -Math.PI / 2; m.position.set(W + t, 0, 0); }
+      g.add(m);
       return m;
     };
-    const backW = layout === "reach" ? W + 160 : W + 2 * t;
-    const back = slab(backW, wallH, t, W / 2, wallH / 2, -t / 2);
-    g.add(back);
-    const left = slab(t, wallH, roomD, -t / 2, wallH / 2, roomD / 2);
-    const right = slab(t, wallH, roomD, W + t / 2, wallH / 2, roomD / 2);
-    if (layout !== "reach" || true) g.add(left);
-    if (layout !== "L") g.add(right);
-    if (layout === "reach") {
-      // header above the closet opening
-      g.add(slab(W + 160, wallH - 92, t, W / 2, 92 + (wallH - 92) / 2, roomD + t / 2));
-      for (const x of [-40 - t / 2, W + 40 + t / 2]) g.add(slab(80 - t, wallH, t, x, wallH / 2, roomD + t / 2));
+
+    if (walk) {
+      wallMesh("back", -t, W + t);
+      wallMesh("left", 0, roomD);
+      wallMesh("right", 0, roomD);
+      if (this.look) wallMesh("front", -t, W + t);
+    } else {
+      // reach-in: the closet's back and short sides, and the bedroom wall with the opening
+      wallMesh("back", -80, W + 80);
+      wallMesh("left", 0, roomD);
+      wallMesh("right", 0, roomD);
+      const header = Math.min(ceil, 92);
+      const front = new THREE.Group();
+      const slab = (sx, sy, x, y) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, t), this.mat.wall);
+        m.position.set(x, y, roomD + t / 2);
+        m.receiveShadow = true;
+        front.add(m);
+      };
+      if (ceil > header) slab(W + 160, ceil - header, W / 2, header + (ceil - header) / 2);
+      for (const x of [-40 - t / 2, W + 40 + t / 2]) slab(80 - t, ceil, x, ceil / 2);
+      g.add(front);
     }
-    if (this.look) this._enclose(g, layout, W, roomD, floorW, floorD, wallH, plane);
-    if (this.decor) this._roomDecor(g, layout, W, roomD);
+    for (const o of openings) this._openingFill(g, design, o, W, roomD, t);
+    for (const b of design.obstacles || []) {
+      const top = b.kind === "soffit" ? ceilingAt(design, b.x + b.w / 2, b.z + b.d / 2) : ceilingAt(design, b.x + b.w / 2, b.z + b.d / 2);
+      const y0 = b.kind === "soffit" ? b.bottom : 0;
+      if (top - y0 > 0.5) {
+        const m = this._box(g, this.mat.wall, [b.x, b.x + b.w], [y0, top], [b.z, b.z + b.d]);
+        m.userData.obstacle = true;
+      }
+    }
+    if (design.slope) this._slopeCeiling(g, design, W, roomD, walk);
+    if (this.look) this._enclose(g, walk, W, roomD, floorW, floorD, ceil, plane, design);
+    if (this.decor) this._roomDecor(g, walk ? "walk" : "reach", W, roomD);
     this.root.add(g);
   }
 
+  // Glass in a window opening, a door leaf in a door opening, with trim on the room side.
+  _openingFill(g, design, o, W, roomD, t) {
+    const grp = new THREE.Group();
+    const y0 = o.kind === "door" ? 0 : o.sill, h = o.h;
+    const trim = 2.25;
+    const box = (m, x, y, z) => this._box(grp, m, x, y, z);
+    if (o.kind === "window") {
+      const pane = box(this.mat.window, [0, o.w], [y0, y0 + h], [-t / 2 - 0.15, -t / 2 + 0.15]);
+      pane.castShadow = false;
+      box(this.mat.trim, [0, o.w], [y0 + h / 2 - 0.6, y0 + h / 2 + 0.6], [-t / 2 - 0.5, -t / 2 + 0.5]);
+      box(this.mat.trim, [-trim, o.w + trim], [y0 - 1.4, y0], [0, 1.4]); // sill
+    } else {
+      const leaf = new THREE.Group();
+      this._box(leaf, this.mat.doorLeaf, [0, o.w - 0.25], [0.2, h - 0.25], [0, 1.4]);
+      this._box(leaf, this.mat.black, [o.w - 3.2, o.w - 2.6], [35, 37], [1.4, 3]);
+      leaf.position.set(0.1, 0, o.swing === "out" ? -t : 0);
+      leaf.rotation.y = o.swing === "out" ? 0 : 0;
+      grp.add(leaf);
+    }
+    for (const [x0, x1] of [[-trim, 0], [o.w, o.w + trim]]) box(this.mat.trim, [x0, x1], [y0, y0 + h + trim], [0, 0.6]);
+    box(this.mat.trim, [-trim, o.w + trim], [y0 + h, y0 + h + trim], [0, 0.6]);
+    // grp is built facing +z on the back wall; turn it onto its wall
+    if (o.wall === "back") grp.position.set(o.at, 0, 0);
+    if (o.wall === "front") { grp.rotation.y = Math.PI; grp.position.set(o.at + o.w, 0, roomD); }
+    if (o.wall === "left") { grp.rotation.y = Math.PI / 2; grp.position.set(0, 0, o.at + o.w); }
+    if (o.wall === "right") { grp.rotation.y = -Math.PI / 2; grp.position.set(W, 0, o.at); }
+    if (o.wall === "front" && !this.look) return;
+    g.add(grp);
+  }
+
+  // The sloped part of an attic ceiling. It faces down, so it disappears when the view is from above.
+  _slopeCeiling(g, design, W, roomD, walk) {
+    const s = design.slope, c = design.ceiling || 96;
+    const run = Math.min(s.run, s.wall === "back" ? roomD : W);
+    const hi = s.knee + ((c - s.knee) * run) / s.run;
+    let pts;
+    const D = walk ? roomD : roomD;
+    if (s.wall === "back") pts = [[0, s.knee, 0], [W, s.knee, 0], [W, hi, run], [0, hi, run]];
+    if (s.wall === "left") pts = [[0, s.knee, D], [0, s.knee, 0], [run, hi, 0], [run, hi, D]];
+    if (s.wall === "right") pts = [[W, s.knee, 0], [W, s.knee, D], [W - run, hi, D], [W - run, hi, 0]];
+    const geo = new THREE.BufferGeometry();
+    const v = pts.flat();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+    geo.setIndex([0, 1, 2, 0, 2, 3]);
+    geo.computeVertexNormals();
+    const n = new THREE.Vector3().fromBufferAttribute(geo.getAttribute("normal"), 0);
+    if (n.y > 0) { geo.setIndex([0, 2, 1, 0, 3, 2]); geo.computeVertexNormals(); }
+    const m = new THREE.Mesh(geo, this.mat.ceiling);
+    m.receiveShadow = true;
+    g.add(m);
+  }
+
   // In the look-around view, close the room around the viewer (walls behind, ceiling).
-  _enclose(g, layout, W, roomD, floorW, floorD, wallH, plane) {
+  _enclose(g, walk, W, roomD, floorW, floorD, wallH, plane, design) {
     const add = (w, h, rx, ry, x, y, z, mat = this.mat.wall) => {
       const m = plane(w, h, mat);
       m.rotation.set(rx, ry, 0);
       m.position.set(x, y, z);
       g.add(m);
     };
-    if (layout === "reach") {
+    if (!walk) {
       const x0 = W / 2 - floorW / 2, x1 = W / 2 + floorW / 2, z0 = roomD + 4, z1 = floorD;
       add(floorW, wallH, 0, Math.PI, W / 2, wallH / 2, z1);
       add(z1 - z0, wallH, 0, Math.PI / 2, x0, wallH / 2, (z0 + z1) / 2);
       add(z1 - z0, wallH, 0, -Math.PI / 2, x1, wallH / 2, (z0 + z1) / 2);
       add(floorW, floorD, Math.PI / 2, 0, W / 2, wallH, floorD / 2, this.mat.ceiling);
     } else {
-      const door = 32, side = (W - door) / 2;
-      if (side > 0) {
-        add(side, wallH, 0, Math.PI, side / 2, wallH / 2, roomD);
-        add(side, wallH, 0, Math.PI, W - side / 2, wallH / 2, roomD);
-      }
-      add(Math.min(door, W), wallH - 82, 0, Math.PI, W / 2, 82 + (wallH - 82) / 2, roomD);
-      if (layout === "L") add(roomD, wallH, 0, -Math.PI / 2, W, wallH / 2, roomD / 2);
-      add(W, roomD, Math.PI / 2, 0, W / 2, wallH, roomD / 2, this.mat.ceiling);
+      // flat part of the ceiling (the slope is drawn separately)
+      const s = design.slope;
+      let [x0, x1, z0, z1] = [0, W, 0, roomD];
+      if (s?.wall === "back") z0 = Math.min(roomD, s.run);
+      if (s?.wall === "left") x0 = Math.min(W, s.run);
+      if (s?.wall === "right") x1 = Math.max(0, W - s.run);
+      if (x1 > x0 && z1 > z0) add(x1 - x0, z1 - z0, Math.PI / 2, 0, (x0 + x1) / 2, wallH, (z0 + z1) / 2, this.mat.ceiling);
     }
   }
 

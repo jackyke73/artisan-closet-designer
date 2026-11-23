@@ -1,8 +1,8 @@
 // Floor plan (top view) as SVG, with closet codes and dimensions.
 // Plan coordinates match the 3D view: x runs along the back wall, y (the 3D z)
 // comes out from the back wall into the room.
-import { DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, WALL_NAMES } from "./design.js";
+import { DEPTHS, HEIGHT, cornerByCode } from "./catalog.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES } from "./design.js";
 
 let WALL = 4.5;     // drawn wall thickness, set from the design
 const REACH_DEPTH = 30; // drawn depth of a reach-in closet
@@ -46,36 +46,93 @@ function moduleShape(m, info, selected) {
   return s.join("");
 }
 
+// A wall drawn as solid pieces with gaps for its windows and doors.
+// Returns svg for wall k between u0 and u1 (in the wall's own direction).
+function wallWithOpenings(design, k, u0, u1, W, RD) {
+  const ops = design.openings.filter((o) => o.wall === k && (isWalk(design) || k === "back")).sort((a, b) => a.at - b.at);
+  const out = [];
+  const rect = (a, b) => {
+    if (b - a < 0.01) return;
+    if (k === "back") out.push(`<rect x="${a}" y="${-WALL}" width="${b - a}" height="${WALL}" class="wall"/>`);
+    if (k === "front") out.push(`<rect x="${a}" y="${RD}" width="${b - a}" height="${WALL}" class="wall"/>`);
+    if (k === "left") out.push(`<rect x="${-WALL}" y="${a}" width="${WALL}" height="${b - a}" class="wall"/>`);
+    if (k === "right") out.push(`<rect x="${W}" y="${a}" width="${WALL}" height="${b - a}" class="wall"/>`);
+  };
+  let u = u0;
+  const side = k === "left" || k === "right";
+  for (const o of ops) {
+    rect(u, Math.max(u, o.at));
+    u = Math.max(u, o.at + o.w);
+    // position along the wall -> plan coordinates
+    const P = (along, off) => (k === "back" ? [along, -off] : k === "front" ? [along, RD + off] : k === "left" ? [-off, along] : [W + off, along]);
+    if (o.kind === "window") {
+      const [x0, y0] = P(o.at, WALL / 2), [x1, y1] = P(o.at + o.w, WALL / 2);
+      const [a0, b0] = P(o.at, 0), [a1, b1] = P(o.at + o.w, WALL);
+      out.push(`<rect x="${Math.min(a0, a1)}" y="${Math.min(b0, b1)}" width="${Math.abs(a1 - a0)}" height="${Math.abs(b1 - b0)}" class="winbox"/>`);
+      out.push(`<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" class="glass"/>`);
+      const [tx, ty] = P(o.at + o.w / 2, k === "back" ? WALL + 4 : k === "front" ? WALL + 7 : WALL + 3.2);
+      out.push(`<text x="${tx}" y="${ty}" class="note"${side ? ` transform="rotate(-90 ${tx} ${ty})"` : ""}>Window ${o.w}"${o.sill >= HEIGHT ? "" : `, sill ${o.sill}"`}</text>`);
+    } else {
+      // swing arc into the room (or out), hinged at the start of the opening
+      const inward = o.swing !== "out";
+      const r = o.w;
+      const sgn = inward ? 1 : -1;
+      const face = inward ? 0 : WALL;
+      const [hx, hy] = P(o.at, face), [ex, ey] = P(o.at + o.w, face), [lx, ly] = P(o.at, face - sgn * r);
+      const sweep = (k === "back" || k === "right") === inward ? 1 : 0;
+      out.push(`<line x1="${hx}" y1="${hy}" x2="${lx}" y2="${ly}" class="doorleaf"/>`);
+      out.push(`<path d="M${lx} ${ly} A${r} ${r} 0 0 ${sweep} ${ex} ${ey}" class="swing"/>`);
+      const [tx, ty] = P(o.at + o.w / 2, k === "front" ? WALL + 7 : k === "back" ? WALL + 4 : WALL + 3.2);
+      out.push(`<text x="${tx}" y="${ty}" class="note"${side ? ` transform="rotate(-90 ${tx} ${ty})"` : ""}>${k === "front" ? "Entry " : ""}door ${o.w}"</text>`);
+    }
+  }
+  rect(u, u1);
+  return out.join("");
+}
+
 export function planHtml(design, selected) {
   WALL = design.wallT || 4.5;
   const walls = activeWalls(design);
   const geo = wallGeometry(design);
   const W = design.walls.back.width;
-  const reach = design.layout === "reach";
-  const sideLen = reach ? REACH_DEPTH : Math.max(...walls.filter((k) => k !== "back").map((k) => design.walls[k].width));
-  const RD = sideLen;
+  const walk = isWalk(design);
+  const reach = !walk;
+  const RD = roomDepth(design);
   const out = [];
 
-  // walls
-  out.push(`<rect x="${-WALL}" y="${-WALL}" width="${W + 2 * WALL}" height="${WALL}" class="wall"/>`);
-  const hasLeft = true, hasRight = design.layout !== "L";
-  if (hasLeft) out.push(`<rect x="${-WALL}" y="0" width="${WALL}" height="${reach ? RD : design.walls.left.width}" class="wall"/>`);
-  if (hasRight) out.push(`<rect x="${W}" y="0" width="${WALL}" height="${reach ? RD : design.walls.right.width}" class="wall"/>`);
+  // walls, with gaps for windows and doors
+  out.push(wallWithOpenings(design, "back", -WALL, W + WALL, W, RD));
+  out.push(wallWithOpenings(design, "left", 0, RD, W, RD));
+  out.push(wallWithOpenings(design, "right", 0, RD, W, RD));
   if (reach) {
     out.push(`<rect x="${-WALL - 30}" y="${RD}" width="${WALL + 30}" height="${WALL}" class="wall"/>`);
     out.push(`<rect x="${W}" y="${RD}" width="${WALL + 30}" height="${WALL}" class="wall"/>`);
     out.push(`<line x1="0" x2="${W}" y1="${RD + WALL / 2}" y2="${RD + WALL / 2}" class="opening"/>`);
     out.push(`<text x="${W / 2}" y="${RD + WALL + 7}" class="note">Closet opening</text>`);
   } else {
-    out.push(`<line x1="0" x2="${W}" y1="${RD}" y2="${RD}" class="opening"/>`);
-    out.push(`<text x="${W / 2}" y="${RD + 7}" class="note">Entry side</text>`);
-    if (!hasRight) out.push(`<line x1="${W}" x2="${W}" y1="0" y2="${RD}" class="opening"/>`);
+    out.push(wallWithOpenings(design, "front", -WALL, W + WALL, W, RD));
+  }
+
+  // sloped ceiling: shade where it is under the cabinet height
+  const sl = design.slope;
+  if (sl && sl.knee < HEIGHT && design.ceiling > sl.knee) {
+    const low = Math.min(sl.run, (sl.run * (HEIGHT - sl.knee)) / (design.ceiling - sl.knee));
+    const zone = sl.wall === "back" ? [0, 0, W, low] : sl.wall === "left" ? [0, 0, low, RD] : [W - low, 0, low, RD];
+    out.push(`<rect x="${zone[0]}" y="${zone[1]}" width="${zone[2]}" height="${zone[3]}" class="lowceil"/>`);
+    const [tx, ty] = sl.wall === "back" ? [W / 2, low - 2] : [zone[0] + zone[2] / 2, RD / 2];
+    out.push(`<text x="${tx}" y="${ty}" class="note low" ${sl.wall === "back" ? "" : `transform="rotate(-90 ${tx} ${ty})"`}>Ceiling under ${HEIGHT}"</text>`);
+  }
+  // columns and soffits (drawn over the cabinets, see below)
+  const over = [];
+  for (const b of design.obstacles) {
+    over.push(`<rect x="${b.x}" y="${b.z}" width="${b.w}" height="${b.d}" class="${b.kind === "column" ? "column" : "soffit"}"/>`);
+    over.push(`<text x="${b.x + b.w / 2}" y="${b.z + b.d / 2 + 1}" class="note">${b.kind === "column" ? "Column" : `Soffit ${b.bottom}"`}</text>`);
   }
 
   // corners (L-shaped, back-left drawn first, right mirrored)
   for (const side of ["left", "right"]) {
-    const c = design.corners[side];
-    if (!c || !walls.includes(side)) continue;
+    const c = cornerOn(design, side);
+    if (!c) continue;
     const spec = cornerByCode[c.code];
     const S = spec.size, d = DEPTHS[spec.depth].inches;
     const mx = (x) => (side === "right" ? W - x : x);
@@ -108,15 +165,15 @@ export function planHtml(design, selected) {
     }
   }
 
+  out.push(...over);
   // overall dimensions
   out.push(dimH(0, W, -WALL - 20, `Back wall ${n(W)}"`, "strong"));
   if (!reach) {
-    if (walls.includes("left")) out.push(dimV(0, design.walls.left.width, -WALL - 20, `Left wall ${n(design.walls.left.width)}"`, "strong"));
-    if (walls.includes("right")) out.push(dimV(0, design.walls.right.width, W + WALL + 24, `Right wall ${n(design.walls.right.width)}"`, "strong"));
+    out.push(dimV(0, RD, -WALL - 20, `Room depth ${n(RD)}"`, "strong"));
   }
 
   const x0 = -WALL - 34, y0 = -WALL - 30;
-  const x1 = W + WALL + (reach ? 40 : 34), y1 = RD + WALL + 14;
+  const x1 = W + WALL + (reach ? 40 : 34), y1 = RD + WALL + 16;
   return `<figure class="elev plan"><figcaption>Floor plan · ${WALL_NAMES.back.toLowerCase()} at top</figcaption>
   <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" preserveAspectRatio="xMidYMid meet">
     <rect x="${-WALL}" y="0" width="${W + 2 * WALL}" height="${RD}" class="floorarea"/>

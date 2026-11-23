@@ -1,6 +1,6 @@
 // Front elevation of each wall as SVG, with closet codes and dimensions.
 import { HEIGHT as H, TOE, DRAWER_ZONE, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, WALL_NAMES } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES } from "./design.js";
 
 const PAD = { l: 34, r: 14, t: 34, b: 52 };
 
@@ -68,11 +68,12 @@ function dim(x0, x1, yy, label, cls = "") {
 export function wallSvg(design, k, selected) {
   const geo = wallGeometry(design)[k];
   const wall = design.walls[k];
-  const W = wall.width;
+  const W = k === "back" ? wall.width : roomDepth(design);
   const parts = [];
+  const room = [];
   let x = geo.start;
   // corner pieces seen from the front
-  const corner = (side) => design.corners[side] && activeWalls(design).includes(side) ? design.corners[side] : null;
+  const corner = (side) => cornerOn(design, side);
   const ownCorner = k === "back" ? [["left", 0], ["right", W - (corner("right") ? cornerByCode[corner("right").code].size : 0)]] : [[k, 0]];
   for (const [side, cx] of ownCorner) {
     const c = corner(side);
@@ -101,13 +102,42 @@ export function wallSvg(design, k, selected) {
     parts.push(`<rect x="${W}" y="0" width="${-geo.free}" height="${H}" class="over"/>`);
   }
   parts.push(dim(0, W, H + 24, `Wall ${fmt(W)}`, "strong"));
+  // the room around the cabinets: ceiling line (with any slope), windows, doors, columns and soffits
+  const RD = roomDepth(design), BW = design.walls.back.width;
+  const pt = (u) => (k === "back" ? [u, 0] : k === "left" ? [0, u] : [BW, u]);
+  const us = [0, W];
+  if (design.slope) for (const b of [design.slope.run, BW - design.slope.run]) if (b > 0 && b < W) us.push(b);
+  us.sort((a, b) => a - b);
+  const top = us.map((u) => [u, ceilingAt(design, ...pt(u))]);
+  const C = Math.max(...top.map(([, h]) => h));
+  room.push(`<polyline points="${top.map(([u, h]) => `${u},${H - h}`).join(" ")}" class="ceil"/>`);
+  room.push(`<text x="${W - 1}" y="${H - top[top.length - 1][1] - 1.5}" class="ceil-label">Ceiling ${+top[top.length - 1][1].toFixed(2)}"</text>`);
+  for (const o of design.openings) {
+    if (o.wall !== k || (!isWalk(design) && k !== "back")) continue;
+    const y0 = o.kind === "door" ? 0 : o.sill;
+    room.push(`<rect x="${o.at}" y="${H - y0 - o.h}" width="${o.w}" height="${o.h}" class="opening-${o.kind}"/>`);
+    room.push(`<text x="${o.at + o.w / 2}" y="${H - y0 - o.h / 2}" class="olabel">${o.kind === "window" ? "WINDOW" : "DOOR"} ${o.w}"×${o.h}"</text>`);
+    parts.push(dim(o.at, o.at + o.w, H + 38, `${o.kind} ${o.w}" at ${o.at}"`, "muted"));
+  }
+  for (const b of design.obstacles) {
+    // things touching this wall
+    const near = k === "back" ? b.z < 1 : k === "left" ? b.x < 1 : b.x + b.w > BW - 1;
+    if (!near) continue;
+    const [u0, u1] = k === "back" ? [b.x, b.x + b.w] : [b.z, b.z + b.d];
+    const y0 = b.kind === "soffit" ? b.bottom : 0;
+    const yTop = ceilingAt(design, b.x + b.w / 2, b.z + b.d / 2);
+    room.push(`<rect x="${u0}" y="${H - yTop}" width="${u1 - u0}" height="${yTop - y0}" class="obst"/>`);
+    room.push(`<text x="${(u0 + u1) / 2}" y="${H - (y0 + yTop) / 2}" class="olabel">${b.kind === "column" ? "COLUMN" : "SOFFIT"}</text>`);
+  }
   parts.push(`<g class="dim"><line x1="-12" x2="-12" y1="0" y2="${H}"/><line x1="-14.5" x2="-9.5" y1="0" y2="0"/><line x1="-14.5" x2="-9.5" y1="${H}" y2="${H}"/>` +
     `<text x="-14" y="${H / 2}" transform="rotate(-90 -14 ${H / 2})">90"</text></g>`);
   const vbW = Math.max(W, x) + PAD.l + PAD.r;
+  const extra = Math.max(0, C - H);
   return `<figure class="elev"><figcaption>${WALL_NAMES[k]}</figcaption>
-  <svg viewBox="${-PAD.l} ${-PAD.t} ${vbW} ${H + PAD.t + PAD.b}" preserveAspectRatio="xMidYMid meet">
+  <svg viewBox="${-PAD.l} ${-PAD.t - extra} ${vbW} ${H + PAD.t + PAD.b + extra + 14}" preserveAspectRatio="xMidYMid meet">
     <line x1="${-PAD.l}" x2="${vbW}" y1="${H}" y2="${H}" class="floor"/>
     ${parts.join("")}
+    ${room.join("")}
   </svg></figure>`;
 }
 

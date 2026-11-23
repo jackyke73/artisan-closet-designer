@@ -294,3 +294,76 @@ body.print { background: #fff; padding: 32px; max-width: 900px; margin: 0 auto; 
 .print .tot td { font-weight: 700; border-top: 2px solid var(--ink); }
 .fine { font-size: 11px; color: var(--muted); margin-top: 20px; }
 @media print { body.print { padding: 0; } .print-shot { break-inside: avoid; } .elev { break-inside: avoid; } }
+
+/* ---- room builder ---- */
+.layouts.six .layout { font-size: 11px; padding: 8px 4px 6px; text-align: center; line-height: 1.2; }
+.layouts.six .layout svg { width: 44px; height: 40px; }
+.layout path.door { fill: none; stroke: var(--ink); stroke-width: 2; }
+.cabwalls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-top: 10px; font-size: 12px; }
+.cabwalls > span { color: var(--muted); }
+.cabwalls .check { margin: 0; color: var(--ink); }
+.field small .bad, b.bad { color: var(--red); font-weight: 600; }
+details.roomx { margin-top: 14px; border: 1.5px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+details.roomx > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+details.roomx > summary em { font-style: normal; background: var(--ink); color: #fff; border-radius: 999px; padding: 0 7px; font-size: 11px; margin-left: 4px; }
+.tiny { font-size: 11px; color: var(--muted); margin: 6px 0; line-height: 1.4; }
+.orow { border-top: 1px solid var(--line); padding: 8px 0 4px; }
+.orow-h { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.orow-h b { min-width: 74px; }
+.orow-h select { flex: 1; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; padding: 4px; background: #fff; }
+.orow-f { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin-top: 6px; }
+.orow-f label { display: grid; gap: 2px; font-size: 11px; color: var(--muted); }
+.orow-f .inch input, .orow-f select { padding: 4px 6px; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; width: 100%; }
+.add-room { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* plan: room features */
+.plan .winbox { fill: #fff; stroke: var(--ink); stroke-width: .3; }
+.plan .glass { stroke: #6aa6c4; stroke-width: .8; }
+.plan .doorleaf { stroke: var(--ink); stroke-width: .6; }
+.plan .lowceil { fill: rgba(229,50,45,.07); stroke: rgba(229,50,45,.5); stroke-width: .3; stroke-dasharray: 2 1.5; }
+.plan .note.low { fill: #c0392b; }
+.plan .column { fill: #cfc9bf; stroke: var(--ink); stroke-width: .4; }
+.plan .soffit { fill: rgba(120,110,95,.08); stroke: #8a8174; stroke-width: .35; stroke-dasharray: 2 1.2; }
+
+/* front drawings: room features */
+.elev .ceil { fill: none; stroke: #8a8174; stroke-width: .45; stroke-dasharray: 3 1.5; }
+.elev .ceil-label { font-size: 2.6px; text-anchor: end; fill: #8a8174; }
+.elev .opening-window { fill: rgba(222,238,246,.55); stroke: #6aa6c4; stroke-width: .5; }
+.elev .opening-door { fill: rgba(240,236,229,.55); stroke: #8a8174; stroke-width: .5; }
+.elev .obst { fill: rgba(170,160,146,.45); stroke: #8a8174; stroke-width: .4; }
+.elev .olabel { font-size: 2.6px; letter-spacing: .2em; text-anchor: middle; dominant-baseline: middle; fill: #7b7368; }
+
+/* interior editor */
+.iv-dlg { width: min(860px, calc(100vw - 24px)); }
+.iv-body { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(260px, 1.1fr); gap: 20px; align-items: start; }
+.iv-draw { background: #fbf8f3; border-radius: var(--radius); padding: 10px; }
+.iv-draw svg { width: 100%; max-height: 64vh; display: block; touch-action: none; }
+.iv-draw :is(.carcass) { fill: #f7f1e8; stroke: var(--ink); stroke-width: .5; }
+.iv-draw .thin { stroke: var(--ink); stroke-width: .25; }
+.iv-draw .shelf { stroke: #8a6a45; stroke-width: .75; }
+.iv-draw .rod { stroke: #777; stroke-width: .6; }
+.iv-draw .hanger { fill: none; stroke: #aaa; stroke-width: .25; }
+.iv-draw .shoe { stroke: #444; stroke-width: .8; }
+.iv-draw .front { fill: #ead9c0; stroke: var(--ink); stroke-width: .35; }
+.iv-draw .handle { stroke: #111; stroke-width: .7; stroke-linecap: round; }
+.iv-draw .code { display: none; }
+.ivdoor { fill: none; stroke: #8a6a45; stroke-width: .4; stroke-dasharray: 1.6 1.2; }
+.ivdoor.glass { stroke: #222; }
+.ivh { cursor: ns-resize; }
+.ivh .hit { fill: transparent; }
+.ivh:hover .hit { fill: rgba(229,50,45,.12); }
+.ivh.locked { cursor: default; }
+.ivh.locked:hover .hit { fill: transparent; }
+.ivlab { font-size: 3px; fill: var(--muted); }
+.ivh.rods .ivlab { fill: #555; font-weight: 600; }
+.iv-ctl { font-size: 13px; }
+.iv-ctl .segs { margin-top: 0; }
+.iv-ctl .ctx-row select { border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: #fff; }
+.iv-list { border-top: 1px solid var(--line); padding: 8px 0; }
+.iv-lh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.iv-item { display: grid; grid-template-columns: 1fr 110px 26px; gap: 6px; align-items: center; padding: 2px 0; font-size: 12px; }
+.iv-item.locked { grid-template-columns: 1fr auto; color: var(--muted); }
+.iv-item .inch input { padding: 4px 6px; }
+.iv-ctl .warn { font-size: 12px; margin: 6px 0; }
+.iv-ctl .ok { font-size: 12px; color: #2f7d4a; margin: 6px 0; }
+@media (max-width: 720px) { .iv-body { grid-template-columns: 1fr; } .iv-draw svg { max-height: 40vh; } }

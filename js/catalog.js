@@ -194,3 +194,87 @@ export function fillWidths(space, widths) {
   for (let s = max; s >= 0; s--) if (best[s]) return best[s].sort((a, b) => b - a);
   return [];
 }
+
+// --- custom interiors --------------------------------------------------------------
+// Any module can be built up from the same catalog parts: a carcass plus the
+// shelves, rods, drawer bank, shoe rack and doors the customer chooses.
+// c = { doors: null | "solid" | "glass", drawers: bool, shoe: bool, shelves: [heights], rods: [heights] }
+export const SNAP = 0.5;                       // shelf and rod heights move in 1/2" steps
+export const DRAWER_TOP = TOE + DRAWER_ZONE;    // fixed shelf over the drawer bank
+export const SHOE_TOP = 72;                     // the shoe rack fills the space below this
+export const ROD_DROP = 24;                     // hanging space a rod needs below it
+export const MIN_GAP = 2;                       // between two shelves or rods
+export const MAX_SHELVES = 12;
+export const CUSTOM_SHOE_WIDTHS = SHOE_WIDTHS;
+
+export function customFromLook(look) {
+  const c = {
+    doors: look.doors || null,
+    drawers: !!look.drawers,
+    shoe: !!look.shoe,
+    shelves: [...(look.shelves || [])],
+    rods: [...(look.rods || [])],
+  };
+  if (c.shoe) c.shelves = c.shelves.filter((y) => y >= SHOE_TOP);
+  return normalizeCustom(c);
+}
+
+export function normalizeCustom(c) {
+  const shelves = [...new Set((c.shelves || []).map((y) => +(+y).toFixed(2)))];
+  if (c.drawers && !shelves.includes(DRAWER_TOP)) shelves.push(DRAWER_TOP);
+  return {
+    doors: c.doors === "solid" || c.doors === "glass" ? c.doors : null,
+    drawers: !!c.drawers && !c.shoe,
+    shoe: !!c.shoe,
+    shelves: shelves.filter((y) => !(y === DRAWER_TOP && !c.drawers)).sort((a, b) => a - b),
+    rods: [...new Set((c.rods || []).map((y) => +(+y).toFixed(2)))].sort((a, b) => a - b),
+  };
+}
+
+export const customLook = (c) => ({ doors: c.doors, drawers: c.drawers, shoe: c.shoe, shelves: [...c.shelves], rods: [...c.rods] });
+
+export function customParts(w, d, c) {
+  const glass = c.doors === "glass";
+  const parts = [[side(d), 1], [topBottom(w, d), 1], [back(w), 1]];
+  if (c.shelves.length) parts.push([shelf(w, d), c.shelves.length]);
+  if (c.rods.length) parts.push([rod(w), c.rods.length]);
+  if (c.drawers) parts.push(...drawers(w, d));
+  if (c.shoe) parts.push([`SR${w}`, 1]);
+  if (c.doors) parts.push(...(c.drawers ? doorOverDrawers(w, glass) : fullDoor(w, glass)));
+  parts.push([KIT, 1]);
+  return parts;
+}
+
+export const customCode = (w, d) => `${moduleCode(w, d)}-CUSTOM`;
+
+export function customName(c) {
+  const bits = [];
+  const n = (k, one, many) => (k ? `${k} ${k === 1 ? one : many}` : "");
+  const shelves = c.shelves.filter((y) => !(c.drawers && y === DRAWER_TOP)).length;
+  bits.push(n(c.rods.length, "rod", "rods"), n(shelves, "shelf", "shelves"));
+  if (c.drawers) bits.push("3 drawers");
+  if (c.shoe) bits.push("shoe rack");
+  if (c.doors) bits.push(`${c.doors} door${c.drawers ? "" : "s"}`);
+  return `Custom: ${bits.filter(Boolean).join(", ") || "empty"}`;
+}
+
+// What stops a custom interior from being built. Empty when it is fine.
+export function customProblems(w, d, c) {
+  const out = [];
+  const lo = (c.drawers ? DRAWER_TOP : TOE + T) + MIN_GAP;
+  const hi = HEIGHT - T - MIN_GAP;
+  if (c.doors && c.rods.length && d !== "D") out.push('Doors over hanging clothes need the 23.75" depth.');
+  if (c.shoe && !SHOE_WIDTHS.includes(w)) out.push(`Shoe racks come in ${SHOE_WIDTHS.join(", ")}" widths.`);
+  if (c.shoe && [...c.shelves, ...c.rods].some((y) => y < SHOE_TOP)) out.push(`Keep the bottom ${SHOE_TOP}" clear for the shoe rack.`);
+  const items = [...c.shelves.filter((y) => !(c.drawers && y === DRAWER_TOP)).map((y) => ["Shelf", y]), ...c.rods.map((y) => ["Rod", y])];
+  if (items.some(([, y]) => y < lo || y > hi)) out.push(`Shelves and rods go between ${lo}" and ${hi}" from the floor.`);
+  const all = [...c.shelves, ...c.rods].sort((a, b) => a - b);
+  for (let i = 1; i < all.length; i++) if (all[i] - all[i - 1] < MIN_GAP) { out.push(`Leave at least ${MIN_GAP}" between shelves and rods.`); break; }
+  const floors = [TOE + T, ...c.shelves, ...(c.shoe ? [SHOE_TOP] : [])];
+  for (const r of c.rods) {
+    const below = Math.max(...floors.filter((y) => y < r), ...c.rods.filter((y) => y < r));
+    if (r - below < ROD_DROP) { out.push(`A rod needs ${ROD_DROP}" of hanging space below it (the rod at ${r}" has ${+(r - below).toFixed(2)}").`); break; }
+  }
+  if (c.shelves.length > MAX_SHELVES) out.push(`Up to ${MAX_SHELVES} shelves per module.`);
+  return out;
+}
