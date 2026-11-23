@@ -90,7 +90,31 @@ function wallWithOpenings(design, k, u0, u1, W, RD) {
   return out.join("");
 }
 
-export function planHtml(design, selected) {
+// Walking room left between the cabinet runs of a walk-in, for the plan.
+function clearances(design, W, RD) {
+  if (!isWalk(design)) return [];
+  const runDepth = (k) => {
+    if (!activeWalls(design).includes(k)) return 0;
+    const ds = design.walls[k].modules.filter((m) => m.style !== "filler").map((m) => DEPTHS[m.depth].inches);
+    const c = (k === "left" || k === "right") && cornerOn(design, k) ? DEPTHS[cornerByCode[cornerOn(design, k).code].depth].inches : 0;
+    return Math.max(0, c, ...ds);
+  };
+  const L = runDepth("left"), R = runDepth("right"), B = runDepth("back");
+  const out = [];
+  const tight = (v) => (v < 30 ? " tight" : "");
+  if (L || R) {
+    const z = B + (RD - B) * 0.55;
+    const v = W - L - R;
+    out.push(dimH(L, W - R, z, `Walkway ${n(v)}"${v < 30 ? " · tight" : ""}`, `clear${tight(v)}`));
+  }
+  if (B) {
+    const v = RD - B;
+    out.push(dimV(B, RD, Math.max(L + 8, W - R - 8), `Clear ${n(v)}"${v < 30 ? " · tight" : ""}`, `clear${tight(v)}`));
+  }
+  return out;
+}
+
+export function planHtml(design, selected, { grid = false, clear = true } = {}) {
   WALL = design.wallT || 4.5;
   const walls = activeWalls(design);
   const geo = wallGeometry(design);
@@ -166,6 +190,7 @@ export function planHtml(design, selected) {
   }
 
   out.push(...over);
+  if (clear) out.push(...clearances(design, W, RD));
   // overall dimensions
   out.push(dimH(0, W, -WALL - 20, `Back wall ${n(W)}"`, "strong"));
   if (!reach) {
@@ -174,9 +199,17 @@ export function planHtml(design, selected) {
 
   const x0 = -WALL - 34, y0 = -WALL - 30;
   const x1 = W + WALL + (reach ? 40 : 34), y1 = RD + WALL + 16;
-  return `<figure class="elev plan"><figcaption>Floor plan · ${WALL_NAMES.back.toLowerCase()} at top</figcaption>
+  let gridLines = "";
+  if (grid) {
+    const g = [];
+    for (let x = 12; x < W; x += 12) g.push(`<line x1="${x}" x2="${x}" y1="0" y2="${RD}" class="${x % 48 ? "" : "major"}"/>`);
+    for (let y = 12; y < RD; y += 12) g.push(`<line x1="0" x2="${W}" y1="${y}" y2="${y}" class="${y % 48 ? "" : "major"}"/>`);
+    gridLines = `<g class="grid">${g.join("")}</g>`;
+  }
+  return `<figure class="elev plan" data-key="plan"><figcaption>Floor plan · ${WALL_NAMES.back.toLowerCase()} at top${grid ? " · grid 1 ft" : ""}</figcaption>
   <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" preserveAspectRatio="xMidYMid meet">
     <rect x="${-WALL}" y="0" width="${W + 2 * WALL}" height="${RD}" class="floorarea"/>
+    ${gridLines}
     ${out.join("")}
   </svg></figure>`;
 }

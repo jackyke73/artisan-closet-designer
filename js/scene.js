@@ -3,6 +3,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { fmtIn } from "./units.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
 import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS } from "./design.js";
 
@@ -11,6 +13,17 @@ const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "
 const SHOE_COLORS = ["#f2f2f0", "#6b4a2f", "#1d1d1f", "#b08a63", "#e9e6e0"];
 const EYE = 63;           // standing eye height for the look-around view, inches
 const ORBIT_FOV = 38, LOOK_FOV = 74;
+const SNAP_R = 2.5;       // measuring snaps to a corner this close, inches
+// Camera views. dir points from the room toward the camera; flat views start without perspective.
+export const VIEWS = {
+  overview: { name: "3D" },
+  front: { name: "Front", dir: [0, 0, 1], flat: true, title: "Straight at the back wall" },
+  top: { name: "Top", dir: [0, 1, 0.0001], flat: true, title: "From above, like the floor plan" },
+  left: { name: "Left wall", dir: [1, 0, 0], flat: true, title: "Straight at the left wall" },
+  right: { name: "Right wall", dir: [-1, 0, 0], flat: true, title: "Straight at the right wall" },
+  cornerL: { name: "Left corner", dir: [-0.8, 0.6, 1], title: "From the front left corner" },
+  cornerR: { name: "Right corner", dir: [0.8, 0.6, 1], title: "From the front right corner" },
+};
 
 function carpetTexture(base) {
   const c = document.createElement("canvas");
@@ -55,6 +68,12 @@ function woodTexture(vertical, base = "#c9a273") {
   return t;
 }
 
+// false if the object or any parent is hidden (raycasting ignores visibility)
+function shown(o) {
+  for (; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
 function mulberry(seed) {
   return () => {
     seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
@@ -65,12 +84,13 @@ function mulberry(seed) {
 }
 
 export class ClosetScene {
-  constructor(container, { onPick, onMenu, onDrag, onDragEnd } = {}) {
+  constructor(container, { onPick, onMenu, onDrag, onDragEnd, onMeasure } = {}) {
     this.container = container;
     this.onPick = onPick;
     this.onMenu = onMenu;
     this.onDrag = onDrag;
     this.onDragEnd = onDragEnd;
+    this.onMeasure = onMeasure;
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }));
     r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     r.shadowMap.enabled = true;
@@ -85,10 +105,17 @@ export class ClosetScene {
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = 0.55;
 
-    this.camera = new THREE.PerspectiveCamera(38, 1, 1, 3000);
+    this.persp = this.camera = new THREE.PerspectiveCamera(38, 1, 1, 3000);
+    this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 8000);
     this.controls = new OrbitControls(this.camera, r.domElement);
     this.controls.enableDamping = true;
-    this.controls.maxPolarAngle = Math.PI / 2 - 0.03;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.minZoom = 0.3;
+    this.controls.maxZoom = 12;
+    // labels for dimensions and measurements
+    const css = (this.labels = new CSS2DRenderer());
+    css.domElement.className = "labels3d";
+    container.appendChild(css.domElement);
     this.controls.minDistance = 30;
     this.controls.maxDistance = 900;
 
@@ -118,6 +145,9 @@ export class ClosetScene {
       rugEdge: new THREE.MeshStandardMaterial({ color: "#8c7f6c", roughness: 1 }),
       ottoman: new THREE.MeshStandardMaterial({ color: "#b9ab98", roughness: 0.95 }),
       select: new THREE.LineBasicMaterial({ color: "#e5322d" }),
+      dimLine: new THREE.LineBasicMaterial({ color: "#1d1d1d", depthTest: false, transparent: true, opacity: 0.85 }),
+      tape: new THREE.LineBasicMaterial({ color: "#e5322d", depthTest: false }),
+      tapeDot: new THREE.MeshBasicMaterial({ color: "#e5322d", depthTest: false }),
       // sketch mode
       sketchFill: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
       sketchGlass: new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false, transparent: true, opacity: 0.12, depthWrite: false }),
@@ -130,6 +160,19 @@ export class ClosetScene {
 
     this.root = new THREE.Group();
     this.scene.add(this.root);
+    this.dimGroup = new THREE.Group();
+    this.tapeGroup = new THREE.Group();
+    this.scene.add(this.dimGroup, this.tapeGroup);
+    this.dimGroup.renderOrder = this.tapeGroup.renderOrder = 10;
+    this.viewName = "overview";
+    this.flat = false;
+    this.cut = true;        // hide walls between the camera and the room
+    this.cutters = [];      // wall pieces that can be hidden
+    this.showDims = false;
+    this.measuring = false;
+    this.measures = [];     // [{ a, b }] in world inches
+    this.pending = null;    // first point of a measurement in progress
+    this.tween = null;
     this.frameKey = "";
     this.look = false;     // look-around (first-person) view
     this.motion = false;   // phone motion drives the look-around view
@@ -142,8 +185,13 @@ export class ClosetScene {
     this._resize();
     const loop = () => {
       if (this.motion && this._orient) this._applyOrientation();
-      else this.controls.update();
+      else {
+        if (this.tween) this._stepTween();
+        this.controls.update();
+      }
+      this._cutaway();
       r.render(this.scene, this.camera);
+      this.labels.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
     loop();
@@ -153,9 +201,11 @@ export class ClosetScene {
     const { clientWidth: w, clientHeight: h } = this.container;
     if (!w || !h) return;
     this.renderer.setSize(w, h);
-    this.camera.aspect = w / h;
-    if (this.look) this.camera.fov = this._lookFov();
-    this.camera.updateProjectionMatrix();
+    this.labels.setSize(w, h);
+    this.persp.aspect = w / h;
+    if (this.look) this.persp.fov = this._lookFov();
+    this.persp.updateProjectionMatrix();
+    this._orthoFrustum();
   }
 
   _ray(cx, cy) {
@@ -168,6 +218,7 @@ export class ClosetScene {
 
   _pickAt(cx, cy) {
     for (const hit of this._ray(cx, cy).intersectObjects(this.root.children, true)) {
+      if (!shown(hit.object)) continue;
       let o = hit.object;
       while (o && !o.userData.pick) o = o.parent;
       if (o) return o.userData.pick;
@@ -190,7 +241,7 @@ export class ClosetScene {
     let drag = null;      // the module being dragged: { wall, index }
     let armed = false;    // touch: held long enough
     let holdTimer = null;
-    const canDrag = (p) => p && !p.corner && !this.look;
+    const canDrag = (p) => p && !p.corner && !this.look && !this.measuring;
     const endDrag = (e) => {
       clearTimeout(holdTimer);
       const wasDrag = drag;
@@ -220,6 +271,7 @@ export class ClosetScene {
     }, true);
     box.addEventListener("pointermove", (e) => {
       if (!down) {
+        if (this.measuring) { el.style.cursor = "crosshair"; if (e.pointerType === "mouse") this._tapeHover(e.clientX, e.clientY, e.shiftKey); return; }
         if (e.pointerType === "mouse" && !this.look) el.style.cursor = canDrag(this._pickAt(e.clientX, e.clientY)) ? "grab" : "";
         return;
       }
@@ -243,6 +295,11 @@ export class ClosetScene {
       if (endDrag(e)) return;
       const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
       if (moved > 5) return;
+      if (this.measuring) {
+        if (d.button === 2) this.cancelMeasure();
+        else if (d.button === 0) this._tapeClick(e.clientX, e.clientY, e.shiftKey);
+        return;
+      }
       if (d.touch && wasArmed) return this.onMenu?.(d.pick, e.clientX, e.clientY);
       if (d.button === 2) {
         if (d.pick) { this.onPick?.(d.pick.corner ? null : d.pick); this.onMenu?.(d.pick, e.clientX, e.clientY); }
@@ -295,11 +352,13 @@ export class ClosetScene {
       }
     }
 
+    this.bounds = { W, D: sideLen, H: Math.max(design.ceiling || 96, H), t: design.wallT || 4.5, walk: layout === "walk" };
+    this._buildDims(design, geo, walls);
     const key = `${layout}|${W}|${sideLen}|${this.look}`;
     this.eye.set(W / 2, Math.min(EYE, (design.ceiling || 96) - 12), layout === "reach" ? 30 + 84 : Math.max(sideLen - 10, 40));
     if (key !== this.frameKey) {
       this.frameKey = key;
-      if (this.look) this._placeEye(); else this.frame(W, sideLen, layout);
+      if (this.look) this._placeEye(); else this._applyView(true);
     }
     this._light(W, sideLen);
     if (sketch) this._sketchify();
@@ -316,14 +375,17 @@ export class ClosetScene {
     if (this.look === on) return;
     this.look = on;
     const c = this.controls;
-    this.camera.fov = on ? this._lookFov() : ORBIT_FOV;
-    this.camera.updateProjectionMatrix();
+    this.tween = null;
+    if (on) this._useCamera(this.persp);
+    else this._useCamera(this.flat ? this.ortho : this.persp);
+    this.persp.fov = on ? this._lookFov() : ORBIT_FOV;
+    this.persp.updateProjectionMatrix();
     c.enableZoom = c.enablePan = !on;
     c.minDistance = on ? 0 : 30;
     c.maxDistance = on ? Infinity : 900;
     c.rotateSpeed = on ? -0.35 : 1;
     c.minPolarAngle = on ? 0.15 : 0;
-    c.maxPolarAngle = on ? Math.PI - 0.15 : Math.PI / 2 - 0.03;
+    c.maxPolarAngle = on ? Math.PI - 0.15 : Math.PI / 2;
     if (!on) this.setMotion(false);
     this.frameKey = ""; // re-place the camera on the next update
   }
@@ -390,14 +452,312 @@ export class ClosetScene {
     }
   }
 
-  frame(W, sideLen, layout) {
-    const depth = layout === "reach" ? 24 : sideLen;
-    const target = new THREE.Vector3(W / 2, 44, depth * 0.3);
-    const span = Math.max(W, depth, 90);
-    const dist = span * 1.3 + 70 + (layout === "reach" ? 0 : depth * 0.7);
-    this.camera.position.set(W / 2 + span * 0.35, 70, target.z + dist);
+  frame() { this._applyView(true); }
+
+  // ---- camera views ------------------------------------------------------------
+  setView(name, { instant = false } = {}) {
+    if (!VIEWS[name]) return;
+    this.viewName = name;
+    if (this.look) return;
+    const flat = !!VIEWS[name].flat;
+    if (flat !== this.flat) this.setFlat(flat, { reframe: false });
+    this._applyView(instant);
+  }
+
+  setFlat(on, { reframe = true } = {}) {
+    this.flat = on;
+    if (this.look) return;
+    const from = this.camera;
+    const target = this.controls.target.clone();
+    const to = on ? this.ortho : this.persp;
+    if (to === from) return;
+    // keep the same direction; the views fit themselves below
+    to.position.copy(from.position);
+    to.quaternion.copy(from.quaternion);
+    this._useCamera(to);
     this.controls.target.copy(target);
+    if (reframe) this._applyView(true, { keepDir: true });
+  }
+
+  _useCamera(cam) {
+    this.camera = cam;
+    this.controls.object = cam;
+    if (cam === this.ortho) { cam.zoom = 1; this._orthoFrustum(); }
+    cam.updateProjectionMatrix();
     this.controls.update();
+  }
+
+  _orthoFrustum() {
+    const { clientWidth: w, clientHeight: h } = this.container;
+    if (!w || !h) return;
+    const a = w / h, half = this.halfH || 80;
+    Object.assign(this.ortho, { left: -half * a, right: half * a, top: half, bottom: -half });
+    this.ortho.updateProjectionMatrix();
+  }
+
+  // Put the camera so the whole room fits. keepDir: fit along the current direction.
+  _applyView(instant, { keepDir = false } = {}) {
+    const b = this.bounds;
+    if (!b) return;
+    if (this.look) { this._placeEye(); return; }
+    const reach = !b.walk;
+    const depth = reach ? 24 : b.D;
+    let target, dir;
+    if (keepDir) {
+      target = this.controls.target.clone();
+      dir = this.camera.position.clone().sub(target).normalize();
+    } else if (this.viewName === "overview") {
+      // the original three-quarter view
+      target = new THREE.Vector3(b.W / 2, 44, depth * 0.3);
+      const span = Math.max(b.W, depth, 90);
+      const dist = span * 1.3 + 70 + (reach ? 0 : depth * 0.7);
+      const pos = new THREE.Vector3(b.W / 2 + span * 0.35, 70, target.z + dist);
+      dir = pos.clone().sub(target).normalize();
+      if (!this.flat) return this._moveTo(pos, target, instant, Math.max(80, dist * 0.18));
+    } else {
+      const v = VIEWS[this.viewName];
+      target = new THREE.Vector3(b.W / 2, this.viewName === "top" ? 0 : b.H / 2, (reach ? b.D : b.D) / 2);
+      dir = new THREE.Vector3(...v.dir).normalize();
+    }
+    // size of the room as seen along dir
+    const f = dir.clone().negate();
+    const up = Math.abs(f.y) > 0.99 ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(f, up).normalize();
+    const up2 = new THREE.Vector3().crossVectors(right, f).normalize();
+    let w = 0, h = 0, dz = 0;
+    for (const x of [-b.t, b.W + b.t]) for (const y of [0, b.H]) for (const z of [-b.t, b.D + (reach ? 10 : 0)]) {
+      const p = new THREE.Vector3(x, y, z).sub(target);
+      w = Math.max(w, Math.abs(p.dot(right)));
+      h = Math.max(h, Math.abs(p.dot(up2)));
+      dz = Math.max(dz, Math.abs(p.dot(f)));
+    }
+    const { clientWidth: cw, clientHeight: ch } = this.container;
+    const aspect = cw && ch ? cw / ch : 1.5;
+    const margin = this.fitMargin || 1.38; // room for the tool bars over the view
+    if (this.flat) {
+      this.halfH = Math.max(h, w / aspect) * margin + 6;
+      this.ortho.zoom = 1;
+      this._orthoFrustum();
+      return this._moveTo(target.clone().addScaledVector(dir, 2000), target, instant, 0);
+    }
+    const tan = Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
+    const dist = Math.max(h / tan, w / (tan * aspect)) * margin + dz;
+    this._moveTo(target.clone().addScaledVector(dir, dist), target, instant, 0);
+  }
+
+  _moveTo(pos, target, instant) {
+    if (instant) {
+      this.tween = null;
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.controls.update();
+      return;
+    }
+    this.tween = { p0: this.camera.position.clone(), t0: this.controls.target.clone(), p1: pos, t1: target, start: performance.now(), ms: 450 };
+  }
+
+  _stepTween() {
+    const tw = this.tween;
+    const k = Math.min(1, (performance.now() - tw.start) / tw.ms);
+    const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+    // swing around the target instead of cutting through the room
+    const r0 = tw.p0.clone().sub(tw.t0), r1 = tw.p1.clone().sub(tw.t1);
+    const len = r0.length() + (r1.length() - r0.length()) * e;
+    const d = r0.normalize().lerp(r1.normalize(), e);
+    if (d.lengthSq() < 1e-6) d.set(0, 1, 0);
+    const t = tw.t0.clone().lerp(tw.t1, e);
+    this.controls.target.copy(t);
+    this.camera.position.copy(t).addScaledVector(d.normalize(), len);
+    if (k >= 1) this.tween = null;
+  }
+
+  // Render one named view to a picture without moving the customer's camera.
+  renderView(name) {
+    const keep = { cam: this.camera, pos: this.camera.position.clone(), q: this.camera.quaternion.clone(), target: this.controls.target.clone(),
+      view: this.viewName, flat: this.flat, halfH: this.halfH, zoom: this.ortho.zoom, look: this.look };
+    if (this.look) this.setLook(false);
+    this.tween = null;
+    this.viewName = name;
+    this.flat = !!VIEWS[name]?.flat;
+    this._useCamera(this.flat ? this.ortho : this.persp);
+    this.fitMargin = 1.08; // nothing covers a saved picture
+    this._applyView(true);
+    this.fitMargin = null;
+    this._cutaway();
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL("image/png");
+    // restore
+    this.viewName = keep.view; this.flat = keep.flat; this.halfH = keep.halfH;
+    this._useCamera(keep.cam);
+    this.ortho.zoom = keep.zoom; this.ortho.updateProjectionMatrix();
+    this.camera.position.copy(keep.pos); this.camera.quaternion.copy(keep.q);
+    this.controls.target.copy(keep.target);
+    this.controls.update();
+    if (keep.look) this.setLook(true), this._placeEye();
+    return url;
+  }
+
+  // Hide each wall the camera is behind, so the cabinets on it stay visible.
+  _cutaway() {
+    const b = this.bounds;
+    if (!b) return;
+    const p = this.camera.position;
+    for (const o of this.cutters) {
+      const k = o.userData.side;
+      const behind = k === "back" ? p.z < -1 : k === "front" ? p.z > b.D + 1 : k === "left" ? p.x < -1 : p.x > b.W + 1;
+      o.visible = !(this.cut && !this.look && behind);
+    }
+  }
+
+  // ---- dimensions in 3D -------------------------------------------------------------
+  _label(text, pos, cls = "") {
+    const div = document.createElement("div");
+    div.className = `dim3d ${cls}`;
+    div.textContent = text;
+    const o = new CSS2DObject(div);
+    o.position.copy(pos);
+    return o;
+  }
+
+  _clearGroup(g) {
+    g.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    g.clear();
+  }
+
+  _buildDims(design, geo, walls) {
+    const g = this.dimGroup;
+    this._clearGroup(g);
+    if (!this.showDims) return;
+    const W = design.walls.back.width, RD = roomDepth(design);
+    const walk = isWalk(design);
+    const pts = [];
+    // wall k: u along the wall, y up, v out from the wall -> world
+    const P = (k, u, y, v) => (k === "back" ? new THREE.Vector3(u, y, v) : k === "left" ? new THREE.Vector3(v, y, u) : new THREE.Vector3(W - v, y, u));
+    const seg = (a, b) => pts.push(a, b);
+    const chain = (k, marks, y, v, labels, cls) => {
+      seg(P(k, marks[0], y, v), P(k, marks[marks.length - 1], y, v));
+      for (const u of marks) seg(P(k, u, y - 1.6, v), P(k, u, y + 1.6, v));
+      labels.forEach(([u, text]) => g.add(this._label(text, P(k, u, y + 2.2, v), cls)));
+    };
+    for (const k of walls) {
+      const mods = design.walls[k].modules;
+      if (!mods.length) continue;
+      let s = geo[k].start;
+      const marks = [s], labels = [];
+      let deep = 0;
+      for (const m of mods) {
+        labels.push([s + m.w / 2, fmtIn(m.w, { feet: false })]);
+        s += m.w;
+        marks.push(s);
+        deep = Math.max(deep, DEPTHS[m.depth].inches);
+      }
+      chain(k, marks, H + 3, deep + 1.5, labels, "");
+    }
+    // overall wall lengths along the top of each wall
+    const sides = walk ? ["back", "left", "right"] : ["back"];
+    for (const k of sides) {
+      const len = k === "back" ? W : RD;
+      chain(k, [0, len], H + 11, 1.5, [[len / 2, `${k === "back" ? "Back" : k === "left" ? "Left" : "Right"} wall ${fmtIn(len)}`]], "strong");
+    }
+    // heights: cabinets and ceiling
+    const ceil = design.ceiling || 96;
+    // at the front right corner of a walk-in, the back right corner of a reach-in
+    const hx = Math.max(2, W - 3), hz = walk ? Math.max(2, RD - 3) : 2;
+    seg(new THREE.Vector3(hx, 0, hz), new THREE.Vector3(hx, ceil, hz));
+    for (const y of [0, H, ceil]) seg(new THREE.Vector3(hx - 1.6, y, hz), new THREE.Vector3(hx + 1.6, y, hz));
+    g.add(this._label(`Ceiling ${fmtIn(ceil)}`, new THREE.Vector3(hx, ceil - 4, hz), "strong"));
+    g.add(this._label(`Cabinets ${H}"`, new THREE.Vector3(hx, H / 2, hz), ""));
+    const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), this.mat.dimLine);
+    lines.renderOrder = 10;
+    g.add(lines);
+  }
+
+  setDims(on) { this.showDims = on; }
+  setCut(on) { this.cut = on; }
+
+  // ---- tape measure ---------------------------------------------------------------------
+  setMeasuring(on) {
+    this.measuring = on;
+    this.pending = null;
+    this.renderer.domElement.style.cursor = on ? "crosshair" : "";
+    this._drawTape();
+  }
+  cancelMeasure() { this.pending = null; this._drawTape(); }
+  clearMeasures() { this.measures = []; this.pending = null; this._drawTape(); this.onMeasure?.(this.measures); }
+
+  // The surface point under the pointer, snapped to a nearby corner.
+  _tapePoint(cx, cy) {
+    for (const hit of this._ray(cx, cy).intersectObjects([...this.root.children], true)) {
+      const o = hit.object;
+      if (!o.isMesh || !shown(o) || o.material === this.mat.glass || o.material === this.mat.sketchGlass) continue;
+      const p = hit.point.clone();
+      const pos = o.geometry.getAttribute("position");
+      let best = null, bd = SNAP_R;
+      if (pos && pos.count < 4000) {
+        const v = new THREE.Vector3();
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+          const dd = v.distanceTo(p);
+          if (dd < bd) { bd = dd; best = v.clone(); }
+        }
+      }
+      if (best) return { p: best, snapped: true };
+      return { p: new THREE.Vector3(...p.toArray().map((c) => Math.round(c * 8) / 8)), snapped: false };
+    }
+    return null;
+  }
+
+  // Shift keeps the line straight along one direction.
+  _lock(a, b, on) {
+    if (!on || !a) return b;
+    const d = b.clone().sub(a);
+    const ax = ["x", "y", "z"].reduce((m, k) => (Math.abs(d[k]) > Math.abs(d[m]) ? k : m), "x");
+    const out = a.clone();
+    out[ax] = b[ax];
+    return out;
+  }
+
+  _tapeHover(cx, cy, shift) {
+    const hit = this._tapePoint(cx, cy);
+    this._hover = hit ? { ...hit, p: this._lock(this.pending, hit.p, shift) } : null;
+    this._drawTape();
+  }
+
+  _tapeClick(cx, cy, shift) {
+    const hit = this._tapePoint(cx, cy);
+    if (!hit) return;
+    const p = this._lock(this.pending, hit.p, shift);
+    if (!this.pending) this.pending = p;
+    else {
+      if (p.distanceTo(this.pending) > 0.05) this.measures.push({ a: this.pending, b: p });
+      this.pending = null;
+      this.onMeasure?.(this.measures);
+    }
+    this._hover = null;
+    this._drawTape();
+  }
+
+  _drawTape() {
+    const g = this.tapeGroup;
+    this._clearGroup(g);
+    const dot = (p, r = 0.9) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), this.mat.tapeDot);
+      m.position.copy(p);
+      m.renderOrder = 11;
+      g.add(m);
+    };
+    const line = (a, b, cls) => {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), this.mat.tape);
+      l.renderOrder = 11;
+      g.add(l);
+      dot(a); dot(b);
+      g.add(this._label(fmtIn(a.distanceTo(b)), a.clone().lerp(b, 0.5), `tape ${cls}`));
+    };
+    for (const m of this.measures) line(m.a, m.b, "");
+    if (!this.measuring) return;
+    if (this.pending && this._hover) line(this.pending, this._hover.p, "live");
+    else if (this.pending) dot(this.pending);
+    else if (this._hover) dot(this._hover.p, this._hover.snapped ? 1.3 : 0.7);
   }
 
   _light(W, D) {
@@ -427,6 +787,7 @@ export class ClosetScene {
     this.mat.wall.color.set(ROOM_WALLS[room.wall]?.color || "#f3efe8");
     this.mat.floor = this._floorMat(room.floor in ROOM_FLOORS ? room.floor : "oak");
     const g = new THREE.Group();
+    this.cutters = [];
     const plane = (w, h, mat) => {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
       m.receiveShadow = true;
@@ -478,6 +839,8 @@ export class ClosetScene {
       if (k === "front") m.position.set(0, 0, roomD);
       if (k === "left") { m.rotation.y = -Math.PI / 2; m.position.set(0, 0, 0); }
       if (k === "right") { m.rotation.y = -Math.PI / 2; m.position.set(W + t, 0, 0); }
+      m.userData.side = k;
+      this.cutters.push(m);
       g.add(m);
       return m;
     };
@@ -546,6 +909,8 @@ export class ClosetScene {
     if (o.wall === "left") { grp.rotation.y = Math.PI / 2; grp.position.set(0, 0, o.at + o.w); }
     if (o.wall === "right") { grp.rotation.y = -Math.PI / 2; grp.position.set(W, 0, o.at); }
     if (o.wall === "front" && !this.look) return;
+    grp.userData.side = o.wall;
+    this.cutters.push(grp);
     g.add(grp);
   }
 

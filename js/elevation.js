@@ -65,7 +65,22 @@ function dim(x0, x1, yy, label, cls = "") {
     `<text x="${(x0 + x1) / 2}" y="${yy - 1.6}">${label}</text></g>`;
 }
 
-export function wallSvg(design, k, selected) {
+// Heights of shelves and rods from the floor, written inside the module.
+function heightMarks(x, w, look) {
+  const marks = [];
+  if (!look.doors) {
+    for (const h of look.shelves || []) marks.push([h, "shelf"]);
+    for (const h of look.rods || []) marks.push([h, "rod"]);
+  }
+  if (look.drawers) marks.push([TOE + DRAWER_ZONE, "drawers"]);
+  if (!marks.length) return "";
+  marks.sort((a, b) => a[0] - b[0]);
+  return `<g class="hmarks">${marks.map(([h, kind]) =>
+    // rod labels sit under the rod so they don't collide with the shelf just above
+    `<text x="${x + 1.4}" y="${H - h + (kind === "rod" ? 2.6 : -0.9)}" class="hmark ${kind}">${kind === "rod" ? "rod " : ""}${+h.toFixed(2)}"</text>`).join("")}</g>`;
+}
+
+export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   const geo = wallGeometry(design)[k];
   const wall = design.walls[k];
   const W = k === "back" ? wall.width : roomDepth(design);
@@ -92,6 +107,7 @@ export function wallSvg(design, k, selected) {
     const info = moduleInfo(m);
     const sel = selected && selected.wall === k && selected.index === i;
     parts.push(`<g data-wall="${k}" data-index="${i}" class="mod">${drawModule(x, m.w, { ...info.look, hinge: m.hinge }, info.code, sel)}</g>`);
+    if ((heights === "all" || sel) && !info.look.filler) parts.push(heightMarks(x, m.w, info.look));
     parts.push(dim(x, x + m.w, H + 10, `${m.w}"`));
     x += m.w;
   });
@@ -133,7 +149,7 @@ export function wallSvg(design, k, selected) {
     `<text x="-14" y="${H / 2}" transform="rotate(-90 -14 ${H / 2})">90"</text></g>`);
   const vbW = Math.max(W, x) + PAD.l + PAD.r;
   const extra = Math.max(0, C - H);
-  return `<figure class="elev"><figcaption>${WALL_NAMES[k]}</figcaption>
+  return `<figure class="elev" data-key="elev-${k}"><figcaption>${WALL_NAMES[k]}</figcaption>
   <svg viewBox="${-PAD.l} ${-PAD.t - extra} ${vbW} ${H + PAD.t + PAD.b + extra + 14}" preserveAspectRatio="xMidYMid meet">
     <line x1="${-PAD.l}" x2="${vbW}" y1="${H}" y2="${H}" class="floor"/>
     ${parts.join("")}
@@ -141,6 +157,6 @@ export function wallSvg(design, k, selected) {
   </svg></figure>`;
 }
 
-export function elevationsHtml(design, selected) {
-  return activeWalls(design).map((k) => wallSvg(design, k, selected)).join("");
+export function elevationsHtml(design, selected, opts) {
+  return activeWalls(design).map((k) => wallSvg(design, k, selected, opts)).join("");
 }

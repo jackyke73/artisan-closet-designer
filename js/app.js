@@ -2,9 +2,10 @@ import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, a
 import { PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength } from "./design.js";
 import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
-import { elevationsHtml, drawModule } from "./elevation.js";
+import { elevationsHtml, drawModule, wallSvg } from "./elevation.js";
 import { planHtml } from "./plan.js";
-import { ClosetScene } from "./scene.js";
+import { ClosetScene, VIEWS } from "./scene.js";
+import { fmtIn } from "./units.js";
 
 const SALES_EMAIL = "sales@artisancabinets.co";
 const STORE_KEY = "artisan-closet-design-v1";
@@ -28,6 +29,15 @@ const ui = {
   look: false,
   sketch: false,
   shots: [], // extra camera angles for the PDF
+  cut: true,       // 3D: hide walls between the camera and the closet
+  dims: false,     // 3D: show sizes
+  measure: false,  // measuring tool on
+  m2: {},          // drawing measurements: { figureKey: [{ a: [x, y], b: [x, y] }] }
+  m2pend: null,    // { key, a } first point of a drawing measurement
+  grid: false,     // floor plan grid
+  clear: true,     // floor plan walkway sizes
+  heights: false,  // front drawings: shelf heights on every module
+  vb: {},          // zoomed drawings: { figureKey: [x, y, w, h] }
 };
 const MAX_SHOTS = 6;
 const TOUCH = matchMedia("(pointer: coarse)").matches;
@@ -60,6 +70,7 @@ const scene = new ClosetScene($("#view3d"), {
     return to;
   },
   onDragEnd: () => { dragWarned = false; commit(); },
+  onMeasure: () => renderTools(),
 });
 
 // ---- helpers ------------------------------------------------------------------
@@ -84,10 +95,38 @@ function commit({ room = false } = {}) {
     return false;
   }
   lastGood = snap();
+  remember();
   try { localStorage.setItem(STORE_KEY, encode(D())); } catch { /* ignore */ }
   render();
   return true;
 }
+
+// ---- undo and redo ----------------------------------------------------------------
+const hist = { list: [], at: -1 };
+function remember() {
+  const s = JSON.stringify(D());
+  if (hist.list[hist.at] === s) return;
+  hist.list = hist.list.slice(0, hist.at + 1);
+  hist.list.push(s);
+  if (hist.list.length > 100) hist.list.shift();
+  hist.at = hist.list.length - 1;
+}
+function travel(step) {
+  const i = hist.at + step;
+  if (i < 0 || i >= hist.list.length) return;
+  hist.at = i;
+  ui.design = JSON.parse(hist.list[i]);
+  const sel = ui.selected;
+  if (sel && !ui.design.walls[sel.wall]?.modules[sel.index]) ui.selected = null;
+  if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+  lastGood = snap();
+  try { localStorage.setItem(STORE_KEY, encode(D())); } catch { /* ignore */ }
+  closeMenu();
+  render();
+  toast(step < 0 ? "Undone" : "Redone");
+}
+$("#undoBtn").addEventListener("click", () => travel(-1));
+$("#redoBtn").addEventListener("click", () => travel(1));
 function icon(look, w) {
   return `<svg viewBox="-2 -6 ${w + 4} ${HEIGHT + 10}" class="mini">${drawModule(0, w, look, "", false)}</svg>`;
 }
@@ -322,8 +361,10 @@ function render() {
   $("#panel").innerHTML = renderSpace() + renderModules();
   renderSummary();
   if (ui.view === "3d") scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
-  else if (ui.view === "plan") $("#elev").innerHTML = planHtml(D(), ui.selected);
-  else $("#elev").innerHTML = elevationsHtml(D(), ui.selected);
+  else drawDrawings();
+  renderTools();
+  $("#undoBtn").disabled = hist.at <= 0;
+  $("#redoBtn").disabled = hist.at >= hist.list.length - 1;
   $("#doorsBtn").textContent = ui.doorsOpen ? "Close doors" : "Open doors";
   document.querySelectorAll(".only3d").forEach((b) => b.classList.toggle("off3d", ui.view !== "3d"));
   $("#lookBtn").textContent = ui.look ? "Back to overview" : "Look around";
@@ -332,12 +373,235 @@ function render() {
   $("#motionBtn").hidden = !(ui.look && TOUCH);
   $("#motionBtn").textContent = scene.motion ? "Stop phone motion" : "Use phone motion";
   $("#shotBtn").textContent = ui.shots.length ? `Add view to PDF (${ui.shots.length})` : "Add view to PDF";
-  $("#hint").textContent = ui.view !== "3d" ? (TOUCH ? "Tap a module to select it" : "Click a module to select it · right-click to change it")
+  $("#hint").textContent = ui.measure ? (TOUCH ? "Tap two points to measure" : "Click two points to measure · hold Shift for a straight line · Esc to stop")
+    : ui.view !== "3d" ? (TOUCH ? "Tap a module to select it · use + and − to zoom" : `Click a module to select it · right-click to change it · ${ui.view === "plan" ? "scroll" : "pinch or Ctrl+scroll"} to zoom`)
     : ui.look ? (scene.motion ? "Move your phone to look around" : "Drag to look around")
     : TOUCH ? "Drag to turn · hold a module to move it or change it"
     : "Drag a module to move it · right-click it to change it · drag the room to turn";
   document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === ui.view));
 }
+
+// ---- view tools: camera views, measuring, zoom ------------------------------------------
+function renderTools() {
+  const t = $("#tools");
+  const btn = (attrs, label, on, title) => `<button type="button" class="tb${on ? " on" : ""}" ${attrs} title="${esc(title)}">${label}</button>`;
+  const ruler = `<svg viewBox="0 0 16 16" class="ico"><path d="M1.5 10.5l9-9 4 4-9 9z M4 8l1.5 1.5 M6 6l2 2 M8 4l1.5 1.5"/></svg>`;
+  if (ui.view === "3d") {
+    t.hidden = ui.look;
+    if (ui.look) return;
+    const n = scene.measures.length;
+    t.innerHTML = `<div class="seg">${Object.entries(VIEWS).map(([k, v]) =>
+      btn(`data-cam="${k}"`, v.name, scene.viewName === k, v.title || "Three-quarter view")).join("")}</div>
+      <div class="seg">${btn('data-tool="flat"', "Flat", scene.flat, "No perspective, like a technical drawing")}${btn('data-tool="cut"', "Cut walls", ui.cut, "Hide walls between you and the closet")}${btn('data-tool="dims"', "Sizes", ui.dims, "Show dimensions in the 3D view")}${btn('data-tool="measure"', `${ruler} Measure`, ui.measure, "Click two points to measure the distance")}${n ? btn('data-tool="clear"', `Clear ${n}`, false, "Remove your measurements") : ""}</div>`;
+    return;
+  }
+  t.hidden = false;
+  const n = Object.entries(ui.m2).filter(([k]) => k.startsWith(ui.view)).reduce((a, [, l]) => a + l.length, 0);
+  t.innerHTML = `<div class="seg">${btn('data-zoom="in"', "+", false, "Zoom in")}${btn('data-zoom="out"', "−", false, "Zoom out")}${btn('data-zoom="fit"', "Fit", false, "Show the whole drawing")}</div>
+    <div class="seg">${ui.view === "plan"
+      ? btn('data-tool="grid"', "Grid", ui.grid, "Show a 1 ft grid") + btn('data-tool="clearance"', "Walkways", ui.clear, "Show the walking room between cabinets")
+      : btn('data-tool="heights"', "Shelf heights", ui.heights, "Show shelf and rod heights on every module")}${btn('data-tool="measure"', `${ruler} Measure`, ui.measure, "Click two points to measure the distance")}${n ? btn('data-tool="clear"', `Clear ${n}`, false, "Remove your measurements") : ""}</div>`;
+}
+
+function setMeasure(on) {
+  ui.measure = on;
+  ui.m2pend = null;
+  scene.setMeasuring(on && ui.view === "3d");
+  if (on) closeMenu();
+  render();
+}
+
+$("#tools").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.cam) { scene.setView(b.dataset.cam); return renderTools(); }
+  if (b.dataset.zoom) {
+    document.querySelectorAll("#elev figure[data-key] svg").forEach((svg) => {
+      if (b.dataset.zoom === "fit") return resetZoom(svg);
+      const vb = svg.viewBox.baseVal;
+      zoomSvg(svg, b.dataset.zoom === "in" ? 1.4 : 1 / 1.4, vb.x + vb.width / 2, vb.y + vb.height / 2);
+    });
+    return;
+  }
+  const t = b.dataset.tool;
+  if (t === "flat") scene.setFlat(!scene.flat);
+  if (t === "cut") { ui.cut = !ui.cut; scene.setCut(ui.cut); }
+  if (t === "dims") { ui.dims = !ui.dims; scene.setDims(ui.dims); return render(); }
+  if (t === "measure") return setMeasure(!ui.measure);
+  if (t === "clear") {
+    if (ui.view === "3d") scene.clearMeasures();
+    else for (const k of Object.keys(ui.m2)) if (k.startsWith(ui.view)) delete ui.m2[k];
+    ui.m2pend = null;
+    return render();
+  }
+  if (t === "grid") { ui.grid = !ui.grid; return render(); }
+  if (t === "clearance") { ui.clear = !ui.clear; return render(); }
+  if (t === "heights") { ui.heights = !ui.heights; return render(); }
+  renderTools();
+});
+
+// A dimension line between two drawing points, labelled in inches.
+function dim2(a, b, cls) {
+  const [x0, y0] = a, [x1, y1] = b;
+  const L = Math.hypot(x1 - x0, y1 - y0);
+  if (L < 0.05) return "";
+  const nx = -(y1 - y0) / L * 2, ny = (x1 - x0) / L * 2;
+  let ang = (Math.atan2(y1 - y0, x1 - x0) * 180) / Math.PI;
+  if (ang > 90) ang -= 180;
+  if (ang <= -90) ang += 180;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  return `<g class="dim ${cls}"><line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}"/>` +
+    `<line x1="${x0 - nx}" y1="${y0 - ny}" x2="${x0 + nx}" y2="${y0 + ny}"/><line x1="${x1 - nx}" y1="${y1 - ny}" x2="${x1 + nx}" y2="${y1 + ny}"/>` +
+    `<circle cx="${x0}" cy="${y0}" r=".7"/><circle cx="${x1}" cy="${y1}" r=".7"/>` +
+    `<text transform="translate(${mx} ${my}) rotate(${ang})" y="-1.5">${fmtIn(L)}</text></g>`;
+}
+const withMeasures = (html, key) =>
+  html.replace("</svg></figure>", `<g class="m2">${(ui.m2[key] || []).map((m) => dim2(m.a, m.b, "measure")).join("")}</g><g class="m2live"></g></svg></figure>`);
+
+function drawingHtml(d, selected) {
+  if (ui.view === "plan") return withMeasures(planHtml(d, selected, { grid: ui.grid, clear: ui.clear }), "plan");
+  return walls().map((k) => withMeasures(wallSvg(d, k, selected, { heights: ui.heights ? "all" : "selected" }), `elev-${k}`)).join("");
+}
+
+function drawDrawings() {
+  const el = $("#elev");
+  el.innerHTML = drawingHtml(D(), ui.selected);
+  el.classList.toggle("measuring", ui.measure);
+  el.querySelectorAll("figure[data-key] svg").forEach((svg) => {
+    svg.dataset.vb0 = svg.getAttribute("viewBox");
+    const vb = ui.vb[svg.closest("figure").dataset.key];
+    if (vb) { svg.setAttribute("viewBox", vb.join(" ")); svg.classList.add("zoomed"); }
+  });
+}
+
+const svgPoint = (svg, cx, cy) => new DOMPoint(cx, cy).matrixTransform(svg.getScreenCTM().inverse());
+function resetZoom(svg) {
+  delete ui.vb[svg.closest("figure").dataset.key];
+  svg.setAttribute("viewBox", svg.dataset.vb0);
+  svg.classList.remove("zoomed");
+}
+function zoomSvg(svg, f, cx, cy) {
+  const vb = svg.viewBox.baseVal;
+  const vb0 = svg.dataset.vb0.split(" ").map(Number);
+  const w = vb.width / f, h = vb.height / f;
+  if (w >= vb0[2] - 0.01) return resetZoom(svg);
+  if (w < vb0[2] / 14) return;
+  const next = [cx - (cx - vb.x) / f, cy - (cy - vb.y) / f, w, h].map((v) => +v.toFixed(3));
+  ui.vb[svg.closest("figure").dataset.key] = next;
+  svg.setAttribute("viewBox", next.join(" "));
+  svg.classList.add("zoomed");
+}
+
+// Snap to the nearest corner (or else edge) of what is drawn, within a few pixels.
+function snap2(svg, cx, cy, from, shift) {
+  let corner = null, cd = 11, edge = null, ed = 7;
+  for (const el of svg.querySelectorAll("rect, polygon, polyline, line")) {
+    if (el.closest(".m2, .m2live, .dim, .grid, .hmarks")) continue;
+    const m = el.getScreenCTM();
+    if (!m) continue;
+    let pts, closed = false;
+    if (el.tagName === "rect") {
+      const x = el.x.baseVal.value, y = el.y.baseVal.value, w = el.width.baseVal.value, h = el.height.baseVal.value;
+      pts = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; closed = true;
+    } else if (el.tagName === "line") pts = [[el.x1.baseVal.value, el.y1.baseVal.value], [el.x2.baseVal.value, el.y2.baseVal.value]];
+    else { pts = Array.from(el.points, (p) => [p.x, p.y]); closed = el.tagName === "polygon"; }
+    const sp = pts.map(([x, y]) => new DOMPoint(x, y).matrixTransform(m));
+    sp.forEach((p, i) => {
+      const dd = Math.hypot(p.x - cx, p.y - cy);
+      if (dd < cd) { cd = dd; corner = p; }
+      const q = sp[i + 1] || (closed ? sp[0] : null);
+      if (!q) return;
+      const vx = q.x - p.x, vy = q.y - p.y, len2 = vx * vx + vy * vy;
+      if (!len2) return;
+      const k = Math.max(0, Math.min(1, ((cx - p.x) * vx + (cy - p.y) * vy) / len2));
+      const ex = p.x + k * vx, ey = p.y + k * vy, de = Math.hypot(ex - cx, ey - cy);
+      if (de < ed) { ed = de; edge = { x: ex, y: ey }; }
+    });
+  }
+  const P = corner || edge;
+  const q = svgPoint(svg, P ? P.x : cx, P ? P.y : cy);
+  let v = [q.x, q.y].map((c) => Math.round(c * 16) / 16);
+  if (from) {
+    const dx = v[0] - from[0], dy = v[1] - from[1];
+    if (shift ? Math.abs(dx) >= Math.abs(dy) : Math.abs(dy) < Math.abs(dx) * 0.07) v[1] = from[1];
+    else if (shift || Math.abs(dx) < Math.abs(dy) * 0.07) v[0] = from[0];
+  }
+  return { v, snapped: !!P };
+}
+
+function liveMeasure(svg, e) {
+  const key = svg.closest("figure").dataset.key;
+  const pend = ui.m2pend?.key === key ? ui.m2pend.a : null;
+  const { v, snapped } = snap2(svg, e.clientX, e.clientY, pend, e.shiftKey);
+  const r = 4 / svg.getScreenCTM().a;
+  const live = svg.querySelector(".m2live");
+  if (live) live.innerHTML = (pend ? dim2(pend, v, "measure live") : "") +
+    `<circle cx="${v[0]}" cy="${v[1]}" r="${snapped ? r * 1.3 : r}" class="cursor${snapped ? " snap" : ""}"/>`;
+  return { key, v, pend };
+}
+
+let pan = null;
+$("#elev").addEventListener("wheel", (e) => {
+  const svg = e.target.closest("figure[data-key] svg");
+  if (!svg) return;
+  if (ui.view !== "plan" && !e.ctrlKey && !e.metaKey) return; // let the drawings scroll
+  e.preventDefault();
+  const p = svgPoint(svg, e.clientX, e.clientY);
+  zoomSvg(svg, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0022)), p.x, p.y);
+}, { passive: false });
+$("#elev").addEventListener("pointerdown", (e) => {
+  const svg = e.target.closest("figure[data-key] svg");
+  if (!svg || e.button !== 0 || ui.measure || e.target.closest(".mod") || !svg.classList.contains("zoomed")) return;
+  pan = { svg, x: e.clientX, y: e.clientY, vb: [...ui.vb[svg.closest("figure").dataset.key]], k: 1 / svg.getScreenCTM().a };
+  svg.setPointerCapture(e.pointerId);
+});
+$("#elev").addEventListener("pointermove", (e) => {
+  if (pan) {
+    const [x, y, w, h] = pan.vb;
+    const next = [x - (e.clientX - pan.x) * pan.k, y - (e.clientY - pan.y) * pan.k, w, h];
+    ui.vb[pan.svg.closest("figure").dataset.key] = next;
+    pan.svg.setAttribute("viewBox", next.join(" "));
+    return;
+  }
+  if (!ui.measure || e.pointerType !== "mouse") return;
+  const svg = e.target.closest("figure[data-key] svg");
+  $("#elev").querySelectorAll(".m2live").forEach((g) => { if (!svg || !svg.contains(g)) g.innerHTML = ""; });
+  if (svg) liveMeasure(svg, e);
+});
+addEventListener("pointerup", () => { pan = null; });
+function measureClick(e) {
+  const svg = e.target.closest("figure[data-key] svg");
+  if (!svg) return;
+  const { key, v, pend } = liveMeasure(svg, e);
+  if (!pend) { ui.m2pend = { key, a: v }; return; }
+  if (Math.hypot(v[0] - pend[0], v[1] - pend[1]) > 0.05) (ui.m2[key] ||= []).push({ a: pend, b: v });
+  ui.m2pend = null;
+  render();
+}
+
+// ---- keyboard shortcuts ---------------------------------------------------------------------
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && ui.measure) {
+    if (ui.m2pend || scene.pending) { ui.m2pend = null; scene.cancelMeasure(); render(); }
+    else setMeasure(false);
+    return;
+  }
+  if (e.target.closest?.("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  if (mod && k === "z") { e.preventDefault(); return travel(e.shiftKey ? 1 : -1); }
+  if (mod && k === "y") { e.preventDefault(); return travel(1); }
+  if (mod || e.altKey) return;
+  if (k === "m") return setMeasure(!ui.measure);
+  const sel = ui.selected;
+  if (!sel || !D().walls[sel.wall]?.modules[sel.index]) return;
+  const act = { delete: "remove", backspace: "remove", arrowleft: "left", arrowright: "right", d: "dup" }[k];
+  if (!act) return;
+  e.preventDefault();
+  closeMenu();
+  modAction(sel, act);
+  commit();
+});
 
 // ---- events ---------------------------------------------------------------------------
 $("#panel").addEventListener("click", (e) => {
@@ -782,17 +1046,21 @@ document.querySelector(".stage-tabs").addEventListener("click", (e) => {
   const b = e.target.closest("[data-view]");
   if (!b) return;
   ui.view = b.dataset.view;
+  ui.m2pend = null;
+  scene.setMeasuring(ui.measure && ui.view === "3d");
   $("#view3d").hidden = ui.view !== "3d";
   $("#elev").hidden = ui.view === "3d";
   render();
 });
 $("#elev").addEventListener("contextmenu", (e) => {
+  if (ui.measure) { e.preventDefault(); ui.m2pend = null; return render(); }
   const g = e.target.closest(".mod");
   if (!g) return;
   e.preventDefault();
   openMenu({ wall: g.dataset.wall, index: +g.dataset.index }, e.clientX, e.clientY);
 });
 $("#elev").addEventListener("click", (e) => {
+  if (ui.measure) return measureClick(e);
   const g = e.target.closest(".mod");
   if (!g) return;
   ui.selected = { wall: g.dataset.wall, index: +g.dataset.index };
@@ -802,6 +1070,7 @@ $("#elev").addEventListener("click", (e) => {
 $("#doorsBtn").addEventListener("click", () => { ui.doorsOpen = !ui.doorsOpen; render(); });
 $("#lookBtn").addEventListener("click", () => {
   ui.look = !ui.look;
+  if (ui.look && ui.measure) { ui.measure = false; scene.setMeasuring(false); }
   scene.setLook(ui.look);
   render();
   if (ui.look) toast(TOUCH ? "Drag to look around, or tap “Use phone motion”." : "Drag to look around the closet.");
@@ -911,25 +1180,44 @@ $("#sendForm").addEventListener("submit", (e) => {
 $("#printBtn").addEventListener("click", () => printSummary(Object.fromEntries(new FormData($("#sendForm")))));
 document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListener("click", () => b.closest("dialog").close()));
 
+// Pictures of the closet from several angles, for the PDF.
+function autoViews() {
+  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: null, sketch: ui.sketch });
+  const names = isWalk(D()) ? ["overview", "top", "cornerL", "cornerR"] : ["overview", "front", "top", "cornerL"];
+  const imgs = names.map((n) => ({ src: scene.renderView(n), name: n === "overview" ? "3D view" : VIEWS[n].name }));
+  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
+  return imgs;
+}
+
 function printSummary(form) {
   const d = D();
-  const imgs = ui.shots.length ? ui.shots : [snapshot()];
+  const date = new Date().toLocaleDateString();
+  const views = [...ui.shots.map((src, i) => ({ src, name: `Your view ${i + 1}` })), ...autoViews()].slice(0, 8);
+  const sheets = [];
+  sheets.push({ title: "3D views", body: `
+    ${form.name ? `<p>${esc(form.name)} · ${esc(form.email || "")} · ${esc(form.phone || "")}</p>` : ""}
+    ${form.install ? `<p><b>Installation:</b> ${esc(form.install)}</p>` : ""}
+    <div class="print-shots multi">${views.map((v) => `<figure><img src="${v.src}" class="print-shot"><figcaption>${esc(v.name)}</figcaption></figure>`).join("")}</div>` });
+  sheets.push({ title: "Floor plan", body: withMeasures(planHtml(d, null, { grid: ui.grid, clear: true }), "plan") });
+  for (const k of activeWalls(d)) sheets.push({ title: `${WALL_NAMES[k]} elevation`, body: withMeasures(wallSvg(d, k, null, { heights: "all" }), `elev-${k}`) });
+  sheets.push({ title: "Modules and parts", body: `
+  <table class="parts"><thead><tr><th>Closet code</th><th>Where</th><th>Description</th><th>MSRP</th></tr></thead><tbody>
+  ${lineItems(d).map((it) => `<tr><td>${it.code}</td><td>${esc(it.wall)}</td><td>${esc(it.name)}</td><td>${money(it.price)}</td></tr>`).join("")}
+  <tr class="tot"><td colspan="3">Estimated MSRP${PRICES_ARE_SAMPLE ? " (sample prices)" : ""}</td><td>${money(totalPrice(d))}</td></tr></tbody></table>
+  <h3>Parts to order</h3><table class="parts"><tbody>${partsList(d).map((p) => `<tr><td>${esc(p.part)}</td><td>× ${p.qty}</td></tr>`).join("")}</tbody></table>
+  <p class="fine">Designs are for planning. Artisan confirms all dimensions, parts and prices before ordering.</p>` });
+  const room = `${layoutName(d)} · ${fmtIn(d.walls.back.width)} wide${isWalk(d) ? ` × ${fmtIn(roomDepth(d))} deep` : ""} · ceiling ${fmtIn(d.ceiling)}`;
   document.querySelector("#printFrame")?.remove();
   const frame = document.createElement("iframe");
   frame.id = "printFrame";
   frame.style.cssText = "position:fixed;width:0;height:0;border:0;right:0;bottom:0";
   frame.srcdoc = `<!doctype html><html><head><title>Artisan closet design${form.name ? " · " + esc(form.name) : ""}</title>
   <link rel="stylesheet" href="${new URL("css/app.css", location.href)}"></head><body class="print">
-  <header class="print-head"><div class="brand">artisan.</div><div><b>Closet design</b><br>${new Date().toLocaleDateString()}</div></header>
-  ${form.name ? `<p>${esc(form.name)} · ${esc(form.email || "")} · ${esc(form.phone || "")}</p>` : ""}
-  ${form.install ? `<p><b>Installation:</b> ${esc(form.install)}</p>` : ""}
-  <div class="print-shots ${imgs.length > 1 ? "multi" : ""}">${imgs.map((s) => `<img src="${s}" class="print-shot">`).join("")}</div>
-  <div class="print-elev">${planHtml(d, null)}${elevationsHtml(d, null)}</div>
-  <table class="parts"><thead><tr><th>Closet code</th><th>Where</th><th>Description</th><th>MSRP</th></tr></thead><tbody>
-  ${lineItems(d).map((it) => `<tr><td>${it.code}</td><td>${esc(it.wall)}</td><td>${esc(it.name)}</td><td>${money(it.price)}</td></tr>`).join("")}
-  <tr class="tot"><td colspan="3">Estimated MSRP${PRICES_ARE_SAMPLE ? " (sample prices)" : ""}</td><td>${money(totalPrice(d))}</td></tr></tbody></table>
-  <h3>Parts to order</h3><table class="parts"><tbody>${partsList(d).map((p) => `<tr><td>${esc(p.part)}</td><td>× ${p.qty}</td></tr>`).join("")}</tbody></table>
-  <p class="fine">Designs are for planning. Artisan confirms all dimensions, parts and prices before ordering.</p>
+  ${sheets.map((sh, i) => `<section class="sheet">
+    <header class="print-head"><div class="brand">artisan.</div><div><b>${esc(sh.title)}</b><br>${esc(room)}</div></header>
+    <div class="sheet-body">${sh.body}</div>
+    <footer class="tblock"><span><b>Artisan Cabinets</b> · Closet design${form.name ? ` for ${esc(form.name)}` : ""}</span><span>${date}</span><span>Inches · not to scale</span><span>Sheet ${i + 1} of ${sheets.length}</span></footer>
+  </section>`).join("")}
   </body></html>`;
   frame.onload = () => setTimeout(() => frame.contentWindow.print(), 300);
   document.body.appendChild(frame);
@@ -950,4 +1238,5 @@ function toast(msg) {
 }
 
 lastGood = snap();
+remember();
 render();

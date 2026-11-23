@@ -367,3 +367,60 @@ details.roomx > summary em { font-style: normal; background: var(--ink); color: 
 .iv-ctl .warn { font-size: 12px; margin: 6px 0; }
 .iv-ctl .ok { font-size: 12px; color: #2f7d4a; margin: 6px 0; }
 @media (max-width: 720px) { .iv-body { grid-template-columns: 1fr; } .iv-draw svg { max-height: 40vh; } }
+
+/* ---- view tools ---- */
+.top .undo { display: flex; gap: 4px; margin-left: 8px; }
+.top .undo .btn { padding: 5px 11px; font-size: 12px; }
+.tool-bar { position: absolute; left: 14px; right: 14px; bottom: 26px; justify-content: center; z-index: 2; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+.tool-bar[hidden] { display: none; }
+.tool-bar .seg { pointer-events: auto; display: flex; flex: none; background: rgba(255,255,255,.88); backdrop-filter: blur(6px); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+.tool-bar .tb { border: 0; background: transparent; border-radius: 999px; padding: 4px 10px; font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.tool-bar .tb:hover { background: rgba(0,0,0,.06); }
+.tool-bar .tb.on { background: var(--ink); color: #fff; }
+.tool-bar .ico { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.3; }
+#view3d { position: relative; }
+.labels3d { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.dim3d { font: 500 11px/1 Poppins, sans-serif; color: var(--ink); background: rgba(255,255,255,.86); padding: 2px 5px; border-radius: 4px; white-space: nowrap; }
+.dim3d.strong { font-weight: 600; }
+.dim3d.tape { background: var(--red); color: #fff; font-weight: 600; }
+.dim3d.tape.live { opacity: .85; }
+.elev-view { padding-bottom: 84px; }
+.elev svg.zoomed { cursor: grab; touch-action: none; }
+.elev svg.zoomed:active { cursor: grabbing; }
+.elev-view.measuring svg, .elev-view.measuring .mod { cursor: crosshair; }
+.elev .dim.measure line { stroke: var(--red); stroke-width: .35; }
+.elev .dim.measure circle { fill: var(--red); }
+.elev .dim.measure text { fill: var(--red); font-weight: 600; font-size: 3.2px; paint-order: stroke; stroke: #fff; stroke-width: .8px; }
+.elev .dim.measure.live { opacity: .75; }
+.elev .m2live .cursor { fill: none; stroke: var(--red); stroke-width: .3; }
+.elev .m2live .cursor.snap { fill: rgba(229,50,45,.25); }
+.plan .grid line { stroke: rgba(0,0,0,.07); stroke-width: .2; }
+.plan .grid line.major { stroke: rgba(0,0,0,.14); }
+.elev .dim.clear line { stroke: #4b7a5a; stroke-dasharray: 1.5 1; }
+.elev .dim.clear text { fill: #3d6b4b; font-weight: 600; }
+.elev .dim.clear.tight line { stroke: #c0392b; }
+.elev .dim.clear.tight text { fill: #c0392b; }
+.elev .hmark { font-size: 2.4px; fill: #6b5236; font-weight: 600; }
+.elev .hmark.rod { fill: #555; }
+@media (max-width: 720px) {
+  .top .undo .btn { padding: 5px 8px; }
+  .top .undo { margin-left: 0; }
+  .top .undo span { display: none; }
+  .stage-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 12px; }
+  .tool-bar { flex-wrap: nowrap; overflow-x: auto; pointer-events: auto; scrollbar-width: none; }
+  .tool-bar .seg { flex: none; }
+}
+
+/* ---- drawing sheets in the PDF ---- */
+.sheet { display: flex; flex-direction: column; min-height: 0; margin-bottom: 36px; }
+.sheet .sheet-body { flex: 1; }
+.print-shots figure { margin: 0; }
+.print-shots figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .1em; }
+.print .elev svg { max-height: 78vh; }
+.tblock { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; border: 1.5px solid var(--ink); font-size: 11px; margin-top: 14px; }
+.tblock span { padding: 6px 8px; border-left: 1px solid var(--ink); }
+.tblock span:first-child { border-left: 0; }
+@media print {
+  .sheet { break-after: page; min-height: 96vh; margin: 0; }
+  .sheet:last-child { break-after: auto; }
+}

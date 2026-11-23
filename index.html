@@ -19,6 +19,10 @@
 <header class="top">
   <a class="brand" href="https://artisancabinets.co">artisan.</a>
   <span class="product">Closet Designer</span>
+  <div class="undo">
+    <button class="btn ghost sm" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo">↶<span> Undo</span></button>
+    <button class="btn ghost sm" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷<span> Redo</span></button>
+  </div>
   <div class="top-total">Estimated MSRP <b id="total">$0</b></div>
   <button class="btn primary" id="sendBtn">Send to Artisan</button>
 </header>
@@ -43,6 +47,7 @@
         <button class="btn dark sm" id="photoBtn">Photo-realistic ✦</button>
       </div>
     </div>
+    <div class="tool-bar" id="tools"></div>
     <div id="view3d" class="view"></div>
     <div id="elev" class="view elev-view" hidden></div>
     <p class="stage-hint" id="hint">Drag to turn · scroll or pinch to zoom · click a module to select it</p>
