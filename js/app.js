@@ -51,27 +51,30 @@ const scene = new ClosetScene($("#view3d"), {
     render();
   },
   onMenu: (p, x, y) => (p ? openMenu(p, x, y) : closeMenu()),
-  // Live reorder while dragging; returns where the module is now.
-  onDrag: (from, x, z) => {
-    const to = dropTarget(D(), from, x, z);
-    if (to.wall === from.wall && to.index === from.index) return from;
-    if (to.wall !== from.wall) {
-      const trial = JSON.parse(JSON.stringify(D()));
-      const n0 = collisions(trial).length;
-      moveModule(trial, from, to);
-      if (collisions(trial).length > n0) {
-        if (!dragWarned) { dragWarned = true; toast(`No room on the ${WALL_NAMES[to.wall].toLowerCase()} for that module.`); }
-        return from;
-      }
-    }
-    moveModule(D(), from, to);
-    ui.selected = to; ui.wall = to.wall;
-    render();
-    return to;
-  },
+  onDrag: (from, x, z) => dragModule(from, x, z),
   onDragEnd: () => { dragWarned = false; commit(); },
   onMeasure: () => renderTools(),
 });
+
+// Live reorder while dragging a module (3D view or floor plan), from a point on the floor
+// (x across, z out from the back wall). Returns where the module is now.
+function dragModule(from, x, z) {
+  const to = dropTarget(D(), from, x, z);
+  if (to.wall === from.wall && to.index === from.index) return from;
+  if (to.wall !== from.wall) {
+    const trial = JSON.parse(JSON.stringify(D()));
+    const n0 = collisions(trial).length;
+    moveModule(trial, from, to);
+    if (collisions(trial).length > n0) {
+      if (!dragWarned) { dragWarned = true; toast(`No room on the ${WALL_NAMES[to.wall].toLowerCase()} for that module.`); }
+      return from;
+    }
+  }
+  moveModule(D(), from, to);
+  ui.selected = to; ui.wall = to.wall;
+  render();
+  return to;
+}
 
 // ---- helpers ------------------------------------------------------------------
 const D = () => ui.design;
@@ -376,7 +379,8 @@ function render() {
   $("#motionBtn").textContent = scene.motion ? "Stop phone motion" : "Use phone motion";
   $("#shotBtn").textContent = ui.shots.length ? `Add view to PDF (${ui.shots.length})` : "Add view to PDF";
   $("#hint").textContent = ui.measure ? (TOUCH ? "Tap two points to measure" : "Click two points to measure · hold Shift for a straight line · Esc to stop")
-    : ui.view !== "3d" ? (TOUCH ? "Tap a module to select it · use + and − to zoom" : `Click a module to select it · right-click to change it · ${ui.view === "plan" ? "scroll" : "pinch or Ctrl+scroll"} to zoom`)
+    : ui.view === "plan" ? (TOUCH ? "Drag a module to move it · tap it to select it · use + and − to zoom" : "Drag a module to move it · right-click it to change it · scroll to zoom")
+    : ui.view !== "3d" ? (TOUCH ? "Tap a module to select it · use + and − to zoom" : "Click a module to select it · right-click to change it · pinch or Ctrl+scroll to zoom")
     : ui.look ? (scene.motion ? "Move your phone to look around" : "Drag to look around")
     : TOUCH ? "Drag to turn · hold a module to move it or change it"
     : "Drag a module to move it · right-click it to change it · drag the room to turn";
@@ -571,6 +575,41 @@ $("#elev").addEventListener("pointermove", (e) => {
   if (svg) liveMeasure(svg, e);
 });
 addEventListener("pointerup", () => { pan = null; });
+
+// Floor plan: drag a module along its wall or onto another wall. The plan is redrawn on
+// every move, so the pointer is tracked on the window and the svg looked up each time.
+let pdrag = null, noClickUntil = 0;
+$("#elev").addEventListener("pointerdown", (e) => {
+  const g = e.target.closest('figure[data-key="plan"] .mod');
+  if (!g || e.button !== 0 || ui.measure) return;
+  pdrag = { from: { wall: g.dataset.wall, index: +g.dataset.index }, x: e.clientX, y: e.clientY, id: e.pointerId, on: false };
+});
+addEventListener("pointermove", (e) => {
+  if (!pdrag || e.pointerId !== pdrag.id) return;
+  if (!pdrag.on) {
+    if (Math.hypot(e.clientX - pdrag.x, e.clientY - pdrag.y) < 5) return;
+    pdrag.on = true;
+    $("#elev").classList.add("dragging");
+    ui.selected = pdrag.from; ui.wall = pdrag.from.wall;
+    render();
+  }
+  const svg = $('#elev figure[data-key="plan"] svg');
+  if (!svg) return;
+  const p = svgPoint(svg, e.clientX, e.clientY);
+  pdrag.from = dragModule(pdrag.from, p.x, p.y);
+});
+function endPlanDrag(e) {
+  if (!pdrag || e.pointerId !== pdrag.id) return;
+  const moved = pdrag.on;
+  pdrag = null;
+  $("#elev").classList.remove("dragging");
+  if (!moved) return;
+  noClickUntil = performance.now() + 350;
+  dragWarned = false;
+  commit();
+}
+addEventListener("pointerup", endPlanDrag);
+addEventListener("pointercancel", endPlanDrag);
 function measureClick(e) {
   const svg = e.target.closest("figure[data-key] svg");
   if (!svg) return;
@@ -1062,6 +1101,7 @@ $("#elev").addEventListener("contextmenu", (e) => {
   openMenu({ wall: g.dataset.wall, index: +g.dataset.index }, e.clientX, e.clientY);
 });
 $("#elev").addEventListener("click", (e) => {
+  if (performance.now() < noClickUntil) return; // the end of a drag, not a click
   if (ui.measure) return measureClick(e);
   const g = e.target.closest(".mod");
   if (!g) return;
