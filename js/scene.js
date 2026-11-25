@@ -5,6 +5,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import { fmtIn } from "./units.js";
+import { hangClothes, shelfItems, shoePair, rug as decorRug, ottoman as decorOttoman } from "./decor.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
 import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt, insideShape, boxInShape, wallFrame, WALL_NAMES } from "./design.js";
 
@@ -15,8 +16,6 @@ function onFrame(o, f, t) {
 }
 
 const OPEN_ANGLE = 1.75; // about 100 degrees
-const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "#b9a58b", "#e8e4dc", "#5c4b3b", "#7a8a99"];
-const SHOE_COLORS = ["#f2f2f0", "#6b4a2f", "#1d1d1f", "#b08a63", "#e9e6e0"];
 const EYE = 63;           // standing eye height for the look-around view, inches
 const ORBIT_FOV = 38, LOOK_FOV = 74;
 const SNAP_R = 2.5;       // measuring snaps to a corner this close, inches
@@ -146,10 +145,6 @@ export class ClosetScene {
       shoeShelf: new THREE.MeshStandardMaterial({ color: "#3b3b3d", roughness: 0.5, metalness: 0.2 }),
       wall: new THREE.MeshStandardMaterial({ color: "#f3efe8", roughness: 0.95 }),
       ceiling: new THREE.MeshStandardMaterial({ color: "#fbfaf7", roughness: 1 }),
-      basket: new THREE.MeshStandardMaterial({ color: "#a58457", roughness: 0.95 }),
-      rug: new THREE.MeshStandardMaterial({ color: "#e4ddd0", roughness: 1 }),
-      rugEdge: new THREE.MeshStandardMaterial({ color: "#8c7f6c", roughness: 1 }),
-      ottoman: new THREE.MeshStandardMaterial({ color: "#b9ab98", roughness: 0.95 }),
       select: new THREE.LineBasicMaterial({ color: "#e5322d" }),
       dimLine: new THREE.LineBasicMaterial({ color: "#1d1d1d", depthTest: false, transparent: true, opacity: 0.85 }),
       tape: new THREE.LineBasicMaterial({ color: "#e5322d", depthTest: false }),
@@ -163,8 +158,6 @@ export class ClosetScene {
       inkSoft: new THREE.LineBasicMaterial({ color: "#a9a49c", toneMapped: false }),
     };
     this.floorMats = {};
-    this.garmentMats = GARMENT_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }));
-    this.shoeMats = SHOE_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.6 }));
 
     this.root = new THREE.Group();
     this.scene.add(this.root);
@@ -385,7 +378,7 @@ export class ClosetScene {
   }
 
   _clear() {
-    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    this.root.traverse((o) => { if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose(); });
     this.root.clear();
   }
 
@@ -467,7 +460,13 @@ export class ClosetScene {
       for (let o = m; o; o = o.parent) if (o.userData.soft) { soft = true; break; }
       m.material = m.material === this.mat.glass ? this.mat.sketchGlass : this.mat.sketchFill;
       m.castShadow = m.receiveShadow = false;
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry, 25), soft ? this.mat.inkSoft : this.mat.ink);
+      const geo = m.geometry;
+      let eg;
+      if (geo.userData.shared) {
+        eg = geo.userData.edges || (geo.userData.edges = new THREE.EdgesGeometry(geo, 40));
+        eg.userData.shared = true;
+      } else eg = new THREE.EdgesGeometry(geo, soft ? 40 : 25);
+      const edges = new THREE.LineSegments(eg, soft ? this.mat.inkSoft : this.mat.ink);
       m.add(edges);
     }
   }
@@ -647,7 +646,7 @@ export class ClosetScene {
   }
 
   _clearGroup(g) {
-    g.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    g.traverse((o) => { if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose(); });
     g.clear();
   }
 
@@ -1023,8 +1022,7 @@ export class ClosetScene {
         if (!clear(rug)) continue;
         const d = new THREE.Group();
         d.userData.soft = true;
-        this._box(d, this.mat.rugEdge, rug.x, [0, 0.25], rug.z).castShadow = false;
-        this._box(d, this.mat.rug, [rug.x[0] + 2, rug.x[1] - 2], [0.25, 0.4], [rug.z[0] + 2, rug.z[1] - 2]).castShadow = false;
+        decorRug(d, cx, cz, w, l);
         g.add(d);
         break;
       }
@@ -1125,10 +1123,7 @@ export class ClosetScene {
   _roomDecor(g, layout, W, roomD) {
     const d = new THREE.Group();
     d.userData.soft = true;
-    const rug = (cx, cz, w, l) => {
-      this._box(d, this.mat.rugEdge, [cx - w / 2, cx + w / 2], [0, 0.25], [cz - l / 2, cz + l / 2]).castShadow = false;
-      this._box(d, this.mat.rug, [cx - w / 2 + 2, cx + w / 2 - 2], [0.25, 0.4], [cz - l / 2 + 2, cz + l / 2 - 2]).castShadow = false;
-    };
+    const rug = (cx, cz, w, l) => decorRug(d, cx, cz, w, l);
     if (layout === "reach") {
       rug(W / 2, roomD + 42, Math.min(W, 84), 48);
     } else {
@@ -1138,10 +1133,7 @@ export class ClosetScene {
         const cz = 24 + 6 + len / 2;
         rug(W / 2, cz, Math.min(clear, 72), Math.min(len, 96));
         if (clear >= 44 && len >= 44) {
-          const o = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, 16, 40), this.mat.ottoman);
-          o.position.set(W / 2, 8.4, cz);
-          o.castShadow = o.receiveShadow = true;
-          d.add(o);
+          decorOttoman(d, W / 2, cz);
         }
       }
     }
@@ -1164,27 +1156,8 @@ export class ClosetScene {
       if (gap < 7) return;
       if (look.drawers && top < TOE + DRAWER_ZONE + 1) return;
       if ((look.rods || []).some((r) => r > top && r <= ceil + 1)) return;
-      if (gap > 16 && rnd() < 0.45) {
-        const n = Math.max(1, Math.floor((w - 2 * T) / 13));
-        const bw = (w - 2 * T - 1.5 * (n + 1)) / n;
-        for (let k = 0; k < n; k++) {
-          const x = T + 1.5 + k * (bw + 1.5);
-          this._box(dec, this.mat.basket, [x, x + bw], [top, top + Math.min(gap - 3, 10)], [z0, z1]);
-        }
-        return;
-      }
-      const n = Math.max(1, Math.floor((w - 2 * T - 2) / 11));
-      const sw = Math.min(10, (w - 2 * T - 2) / n - 1);
-      for (let k = 0; k < n; k++) {
-        if (rnd() < 0.3) continue;
-        const layers = Math.min(Math.floor((gap - 2) / 1.6), 3 + Math.floor(rnd() * 4));
-        const x = T + 1 + k * (sw + 1) + (rnd() - 0.5) * 0.4;
-        for (let l = 0; l < layers; l++) {
-          const mat = this.garmentMats[Math.floor(rnd() * this.garmentMats.length)];
-          const j = (rnd() - 0.5) * 0.5;
-          this._box(dec, mat, [x + j, x + sw + j], [top + l * 1.6, top + (l + 1) * 1.6 - 0.1], [z0, z1]);
-        }
-      }
+      const style = gap > 16 && rnd() < 0.45 ? "baskets" : gap > 12 && rnd() < 0.15 ? "bag" : "stacks";
+      shelfItems(dec, { w, z0, z1, top, gap, T, rnd, style });
     });
     g.add(dec);
   }
@@ -1206,20 +1179,8 @@ export class ClosetScene {
     parent.add(m);
   }
 
-  _garments(parent0, axis, a0, a1, y, c, span, avail, rnd) {
-    const parent = new THREE.Group();
-    parent.userData.soft = true;
-    parent0.add(parent);
-    const n = Math.floor((a1 - a0 - 2) / 2.3);
-    for (let i = 0; i < n; i++) {
-      if (rnd() < 0.12) continue;
-      const a = a0 + 1.5 + i * 2.3 + (rnd() - 0.5) * 0.5;
-      const len = Math.min(avail - 3, 26 + rnd() * 12);
-      const mat = this.garmentMats[Math.floor(rnd() * this.garmentMats.length)];
-      const sp = span - rnd() * 2;
-      if (axis === "x") this._box(parent, mat, [a - 0.45, a + 0.45], [y - len, y - 1.2], [c - sp / 2, c + sp / 2]);
-      else this._box(parent, mat, [c - sp / 2, c + sp / 2], [y - len, y - 1.2], [a - 0.45, a + 0.45]);
-    }
+  _garments(parent, axis, a0, a1, y, c, span, avail, rnd) {
+    hangClothes(parent, axis, a0, a1, y, c, span, avail, rnd);
   }
 
   _module(look, w, d, { hinge, doorsOpen, seed }) {
@@ -1258,11 +1219,11 @@ export class ClosetScene {
         tray.position.set(w / 2, y, d / 2);
         tray.rotation.x = 0.26;
         this._box(tray, this.mat.shoeShelf, [-(w / 2 - T), w / 2 - T], [-0.25, 0.25], [-(d / 2 - 1), d / 2 - 1]);
-        const pairs = Math.floor((w - 2 * T) / 7);
+        const inner = w - 2 * T, pairs = Math.floor(inner / 7.4);
+        const pitch = inner / Math.max(1, pairs);
         for (let p = 0; p < pairs; p++) {
-          const x = -(w / 2 - T) + 1.2 + p * 7 + (rnd() - 0.5);
-          const mat = this.shoeMats[Math.floor(rnd() * this.shoeMats.length)];
-          for (const dx of [0, 3.1]) this._box(tray, mat, [x + dx, x + dx + 2.8], [0.25, 3.2], [-4.6, 4.6]);
+          if (rnd() < 0.1) continue;
+          shoePair(tray, -inner / 2 + pitch * (p + 0.5) + (rnd() - 0.5) * 0.6, rnd);
         }
         g.add(tray);
       }
