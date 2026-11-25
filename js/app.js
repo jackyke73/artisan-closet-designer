@@ -1,11 +1,12 @@
 import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
-import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength } from "./design.js";
+import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength, isCustom, ROOM_SHAPES, SHAPE_ICONS, applyShape, toCustom, shapeWalls, shapeBox, moveShapeWall, setShapeWallLength, splitShapeWall, wallRef } from "./design.js";
 import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule, wallSvg } from "./elevation.js";
 import { planHtml } from "./plan.js";
 import { ClosetScene, VIEWS } from "./scene.js";
 import { fmtIn } from "./units.js";
+import { initAuth } from "./auth.js";
 
 const SALES_EMAIL = "sales@artisancabinets.co";
 const STORE_KEY = "artisan-closet-design-v1";
@@ -144,22 +145,46 @@ const PRESET_ICONS = {
   galley: `<path d="M6 8h6v32H6zM36 8h6v32h-6z"/>`,
   single: `<path d="M6 8h36v6H6z"/><path d="M20 40h8" class="door"/>`,
 };
+const roomText = (d) => (isCustom(d)
+  ? `Custom room, ${d.shape.ids.length} walls, ${fmtIn(shapeBox(d).W)} × ${fmtIn(shapeBox(d).D)} overall`
+  : `${fmtIn(d.walls.back.width)} wide${isWalk(d) ? ` × ${fmtIn(roomDepth(d))} deep` : ""}`);
 const num = (attrs, v, unit = "in") => `<span class="inch"><input type="number" ${attrs} value="${v}"> ${unit}</span>`;
 const ftIn = (n) => `${Math.floor(n / 12)}' ${+(n % 12).toFixed(2)}"`;
+
+// Custom room: start shapes, then each wall with its length, cabinets on or off, and a
+// button that adds a jog. Walls can also be dragged on the floor plan.
+function customRoomHtml(d) {
+  const shapes = Object.entries(ROOM_SHAPES).map(([k, v]) =>
+    `<button class="btn ghost sm shape-btn" data-shape="${k}"><svg viewBox="0 0 48 44"><path d="${SHAPE_ICONS[k]}"/></svg>${v.name}</button>`).join("");
+  const rows = shapeWalls(d).map((w) => `<div class="wrow">
+      <label class="check"><input type="checkbox" data-cab="${w.k}" ${d.cab[w.k] ? "checked" : ""}> <b>${WALL_NAMES[w.k]}</b></label>
+      ${num(`min="${6}" max="600" step="0.25" data-wlen="${w.i}"`, +w.len.toFixed(2))}
+      <button class="icon-btn" data-split="${w.i}" title="Add a 12&quot; jog in the middle of ${WALL_NAMES[w.k].toLowerCase()}">⌐</button>
+    </div>`).join("");
+  return `<div class="custom-room">
+      <div class="shape-row"><span>Start from</span>${shapes}</div>
+      <div class="wrows"><div class="wrow head"><span>Wall · cabinets</span><span>Length</span><span>Jog</span></div>${rows}</div>
+      <p class="tiny">Tick the walls that get cabinets. Drag a wall on the floor plan to move it, or type its length; the walls next to it stretch to match.</p>
+    </div>`;
+}
 
 function renderSpace() {
   const d = D();
   const walk = isWalk(d);
   const pk = presetKey(d);
+  const custom = isCustom(d);
   const presetBtns = Object.entries(PRESETS).map(([k, v]) => `
     <button class="layout ${pk === k ? "on" : ""}" data-preset="${k}">
       <svg viewBox="0 0 48 44"><rect x="2" y="4" width="44" height="38" rx="2" class="room"/>${PRESET_ICONS[k]}</svg>
-      <span>${v.name}</span></button>`).join("");
-  const cabChecks = walk ? `<div class="cabwalls"><span>Cabinets on</span>${SIDES.map((k) =>
+      <span>${v.name}</span></button>`).join("") + `
+    <button class="layout wide-tile ${custom ? "on" : ""}" data-preset="custom">
+      <svg viewBox="0 0 48 44"><path d="M6 18h12V6h24v32H6z" class="outline"/><path d="M18 6v12H6" class="jog"/></svg>
+      <span>Custom room<small>any shape, any wall</small></span></button>`;
+  const cabChecks = custom ? "" : walk ? `<div class="cabwalls"><span>Cabinets on</span>${SIDES.map((k) =>
     `<label class="check"><input type="checkbox" data-cab="${k}" ${d.cab[k] ? "checked" : ""}> ${WALL_NAMES[k].replace(" wall", "")}</label>`).join("")}</div>` : "";
   const sizeInputs = `
-    <label class="field"><span>${walk ? "Room width (back wall)" : "Closet width"}</span>
-      ${num(`min="24" max="400" step="0.25" data-roomw`, d.walls.back.width)}<small>${ftIn(d.walls.back.width)}</small></label>
+    ${custom ? "" : `<label class="field"><span>${walk ? "Room width (back wall)" : "Closet width"}</span>
+      ${num(`min="24" max="400" step="0.25" data-roomw`, d.walls.back.width)}<small>${ftIn(d.walls.back.width)}</small></label>`}
     ${walk ? `<label class="field"><span>Room depth (side walls)</span>
       ${num(`min="36" max="400" step="0.25" data-roomd`, d.walls.left.width)}<small>${ftIn(d.walls.left.width)}</small></label>` : ""}
     <label class="field"><span>Ceiling height</span>
@@ -183,10 +208,10 @@ function renderSpace() {
   }).join("") : "";
 
   // windows and doors
-  const openWalls = walk ? ["back", "left", "right", "front"] : ["back"];
+  const openWalls = custom ? d.shape.ids : walk ? ["back", "left", "right", "front"] : ["back"];
   const openRows = d.openings.map((o, i) => {
     if (!openWalls.includes(o.wall)) return "";
-    const along = o.wall === "left" || o.wall === "right" ? "From back" : "From left";
+    const along = custom ? "From wall start" : o.wall === "left" || o.wall === "right" ? "From back" : "From left";
     return `<div class="orow" data-oi="${i}">
       <div class="orow-h"><b>${o.kind === "window" ? "Window" : "Door"}</b>
         <select data-o="wall">${openWalls.map((k) => `<option value="${k}" ${o.wall === k ? "selected" : ""}>${WALL_NAMES[k]}</option>`).join("")}</select>
@@ -210,7 +235,7 @@ function renderSpace() {
       </div></div>`).join("");
   const sl = d.slope;
   const slopeWalls = walk ? SIDES : SIDES;
-  const slopeRow = `<div class="orow">
+  const slopeRow = custom ? "" : `<div class="orow">
       <div class="orow-h"><b>Sloped ceiling</b>
         <select data-slope="wall"><option value="">None</option>${slopeWalls.map((k) => `<option value="${k}" ${sl?.wall === k ? "selected" : ""}>Comes down to the ${WALL_NAMES[k].toLowerCase()}</option>`).join("")}</select></div>
       ${sl ? `<div class="orow-f">
@@ -223,8 +248,9 @@ function renderSpace() {
     <section class="step"><h2><b>1</b>Your space</h2>
       <div class="layouts six">${presetBtns}</div>
       ${cabChecks}
+      ${custom ? customRoomHtml(d) : ""}
       <div class="fields">${sizeInputs}${depthInputs}${cornerInputs}</div>
-      <details class="roomx" ${ui.roomOpen ? "open" : ""}><summary>Windows, doors, columns and slopes${nRoom ? ` <em>${nRoom}</em>` : ""}</summary>
+      <details class="roomx" ${ui.roomOpen ? "open" : ""}><summary>Windows, doors, columns${custom ? "" : " and slopes"}${nRoom ? ` <em>${nRoom}</em>` : ""}</summary>
         <p class="tiny">Cabinets can’t go over a window (unless its sill is above ${HEIGHT}"), a door or its swing, a column, a low soffit, or a sloped ceiling under ${HEIGHT}".</p>
         ${openRows}${obRows}${slopeRow}
         <div class="add-room">
@@ -234,7 +260,7 @@ function renderSpace() {
           <button class="btn ghost sm" data-addob="soffit">+ Soffit</button>
         </div>
       </details>
-      <p class="hint">Artisan closets are ${HEIGHT}" tall. Measure each wall from corner to corner.</p>
+      <p class="hint">Artisan closets are ${HEIGHT}" tall. Measure each wall from corner to corner.${custom ? " Walls are numbered clockwise, seen from above." : ""}</p>
       <h3>Room look <small>pictures only</small></h3>
       <div class="swatches" aria-label="Wall color">${Object.entries(ROOM_WALLS).map(([k, v]) =>
         `<button class="swatch ${d.room.wall === k ? "on" : ""}" data-wallcolor="${k}" title="${v.name} walls"><i style="background:${v.color}"></i><span>${v.name}</span></button>`).join("")}</div>
@@ -557,7 +583,7 @@ $("#elev").addEventListener("wheel", (e) => {
 }, { passive: false });
 $("#elev").addEventListener("pointerdown", (e) => {
   const svg = e.target.closest("figure[data-key] svg");
-  if (!svg || e.button !== 0 || ui.measure || e.target.closest(".mod") || !svg.classList.contains("zoomed")) return;
+  if (!svg || e.button !== 0 || ui.measure || e.target.closest(".mod, .cwall") || !svg.classList.contains("zoomed")) return;
   pan = { svg, x: e.clientX, y: e.clientY, vb: [...ui.vb[svg.closest("figure").dataset.key]], k: 1 / svg.getScreenCTM().a };
   svg.setPointerCapture(e.pointerId);
 });
@@ -576,9 +602,59 @@ $("#elev").addEventListener("pointermove", (e) => {
 });
 addEventListener("pointerup", () => { pan = null; });
 
+// Floor plan of a custom room: drag a wall to move it in or out. The drawing is held still
+// while dragging (the room's corner stays at 0,0, so the view follows that shift).
+let wdrag = null, noClickUntil = 0;
+$("#elev").addEventListener("pointerdown", (e) => {
+  const g = e.target.closest('figure[data-key="plan"] .cwall');
+  if (!g || e.button !== 0 || ui.measure || !isCustom(D())) return;
+  const svg = g.closest("svg");
+  const vb = svg.viewBox.baseVal;
+  wdrag = { i: +g.dataset.edge, id: e.pointerId, p0: svgPoint(svg, e.clientX, e.clientY), base: JSON.stringify(D()),
+    vb0: [vb.x, vb.y, vb.width, vb.height], hadVb: !!ui.vb.plan, last: 0, on: false };
+  e.preventDefault();
+});
+addEventListener("pointermove", (e) => {
+  if (!wdrag || e.pointerId !== wdrag.id) return;
+  const svg = $('#elev figure[data-key="plan"] svg');
+  if (!svg) return;
+  const base = JSON.parse(wdrag.base);
+  const f = shapeWalls(base)[wdrag.i];
+  // hold the view still in the coordinates the drag started in
+  ui.vb.plan = wdrag.cur || wdrag.vb0;
+  svg.setAttribute("viewBox", ui.vb.plan.join(" "));
+  const p = svgPoint(svg, e.clientX, e.clientY);
+  const raw = (p.x - wdrag.p0.x - (wdrag.shift?.[0] || 0)) * f.n[0] + (p.y - wdrag.p0.y - (wdrag.shift?.[1] || 0)) * f.n[1];
+  const delta = Math.round(raw * 2) / 2;
+  if (!wdrag.on && Math.abs(raw) < 0.75) return;
+  wdrag.on = true;
+  if (delta === wdrag.last) return;
+  if (!moveShapeWall(base, wdrag.i, delta)) return; // keep the last shape that worked
+  wdrag.last = delta;
+  // a corner the drag doesn't move, to see how far the outline was shifted
+  const N = base.shape.pts.length, j = (wdrag.i + 2) % N;
+  const old = JSON.parse(wdrag.base).shape.pts[j], now = base.shape.pts[j];
+  wdrag.shift = [now[0] - old[0], now[1] - old[1]];
+  wdrag.cur = [wdrag.vb0[0] + wdrag.shift[0], wdrag.vb0[1] + wdrag.shift[1], wdrag.vb0[2], wdrag.vb0[3]];
+  ui.design = base;
+  ui.vb.plan = wdrag.cur;
+  render();
+});
+function endWallDrag(e) {
+  if (!wdrag || e.pointerId !== wdrag.id) return;
+  const { on, hadVb } = wdrag;
+  wdrag = null;
+  if (!hadVb) delete ui.vb.plan;
+  if (!on) return render();
+  noClickUntil = performance.now() + 350;
+  commit({ room: true });
+}
+addEventListener("pointerup", endWallDrag);
+addEventListener("pointercancel", endWallDrag);
+
 // Floor plan: drag a module along its wall or onto another wall. The plan is redrawn on
 // every move, so the pointer is tracked on the window and the svg looked up each time.
-let pdrag = null, noClickUntil = 0;
+let pdrag = null;
 $("#elev").addEventListener("pointerdown", (e) => {
   const g = e.target.closest('figure[data-key="plan"] .mod');
   if (!g || e.button !== 0 || ui.measure) return;
@@ -627,7 +703,7 @@ document.addEventListener("keydown", (e) => {
     else setMeasure(false);
     return;
   }
-  if (e.target.closest?.("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]") || document.body.classList.contains("gated")) return;
   const mod = e.metaKey || e.ctrlKey;
   const k = e.key.toLowerCase();
   if (mod && k === "z") { e.preventDefault(); return travel(e.shiftKey ? 1 : -1); }
@@ -653,6 +729,29 @@ $("#panel").addEventListener("click", (e) => {
     return;
   }
   const d = D();
+  if (b.dataset.preset === "custom") {
+    if (isCustom(d)) return;
+    const hadCorners = isWalk(d) && (d.corners.left || d.corners.right) && d.cab.back;
+    toCustom(d);
+    ui.selected = null;
+    if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+    if (hadCorners) toast("Corner modules aren’t available in custom rooms yet, so they were left out.");
+    if (ui.view === "3d") toast("Now drag the walls on the floor plan, or type their lengths.");
+    return commit({ room: true });
+  }
+  if (b.dataset.shape) {
+    applyShape(d, b.dataset.shape);
+    ui.selected = null;
+    ui.wall = walls()[0];
+    toast(`${ROOM_SHAPES[b.dataset.shape].name} room. Undo brings your cabinets back.`);
+    return commit({ room: true });
+  }
+  if (b.dataset.split != null) {
+    if (!splitShapeWall(d, +b.dataset.split)) return toast("That wall is too short for a jog.");
+    ui.selected = null; // walls were renumbered
+    if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+    return commit({ room: true });
+  }
   if (b.dataset.preset) {
     applyPreset(d, b.dataset.preset);
     ui.selected = null;
@@ -713,7 +812,9 @@ $("#panel").addEventListener("contextmenu", (e) => {
 function addOpening(kind) {
   const d = D();
   const def = OPENING_DEFAULTS[kind];
-  const order = isWalk(d)
+  const order = isCustom(d)
+    ? [...d.shape.ids].sort((a, b) => (d.cab[a] ? 1 : 0) - (d.cab[b] ? 1 : 0))
+    : isWalk(d)
     ? (kind === "door" ? ["front", "left", "right", "back"] : ["left", "right", "back", "front"])
     : ["back"];
   const base = collisions(d).length;
@@ -737,7 +838,7 @@ function addOpening(kind) {
 function addObstacle(kind) {
   const d = D();
   const def = OBSTACLE_DEFAULTS[kind];
-  const W = d.walls.back.width;
+  const W = isCustom(d) ? shapeBox(d).W : d.walls.back.width;
   if (kind === "column") d.obstacles.push({ kind, ...def, x: +(W - def.w).toFixed(2), z: 0 });
   else d.obstacles.push({ kind, ...def, w: Math.min(W, def.w), x: 0, z: 0 });
 }
@@ -1025,6 +1126,12 @@ $("#panel").addEventListener("change", (e) => {
     ui.selected = null;
     return commit({ room: true });
   }
+  if (t.dataset.wlen !== undefined) {
+    const i = +t.dataset.wlen;
+    const want = Math.max(6, Math.min(600, +t.value || 0));
+    if (!setShapeWallLength(d, i, want)) { toast("That length doesn’t fit with the other walls. Change the wall after it first."); return render(); }
+    return commit({ room: true });
+  }
   if (t.dataset.roomw !== undefined) { d.walls.back.width = Math.max(24, Math.min(400, +t.value || 96)); return commit({ room: true }); }
   if (t.dataset.roomd !== undefined) { d.walls.left.width = d.walls.right.width = Math.max(36, Math.min(400, +t.value || 72)); return commit({ room: true }); }
   if (t.dataset.ceiling !== undefined) { d.ceiling = Math.max(CEILING.min, Math.min(CEILING.max, +t.value || CEILING.def)); return commit({ room: true }); }
@@ -1192,8 +1299,9 @@ function summaryText(form) {
     form.notes ? `Notes: ${form.notes}` : "",
     ``,
     `Layout: ${layoutName(d)}`,
-    `Room: ${d.walls.back.width}" wide${isWalk(d) ? ` x ${roomDepth(d)}" deep` : ""}, ceiling ${d.ceiling}"${d.slope ? `, sloping down to ${d.slope.knee}" at the ${WALL_NAMES[d.slope.wall].toLowerCase()} over ${d.slope.run}"` : ""}`,
-    ...d.openings.filter((o) => isWalk(d) || o.wall === "back").map((o) => `${o.kind === "window" ? "Window" : "Door"} on the ${WALL_NAMES[o.wall].toLowerCase()}: ${o.w}" x ${o.h}", ${o.at}" from the ${o.wall === "left" || o.wall === "right" ? "back" : "left"}${o.kind === "window" ? `, sill ${o.sill}"` : ""}`),
+    `Room: ${roomText(d)}, ceiling ${d.ceiling}"${d.slope ? `, sloping down to ${d.slope.knee}" at the ${WALL_NAMES[d.slope.wall].toLowerCase()} over ${d.slope.run}"` : ""}`,
+    ...(isCustom(d) ? shapeWalls(d).map((w) => `${WALL_NAMES[w.k]}: ${+w.len.toFixed(2)}"`) : []),
+    ...d.openings.filter((o) => isWalk(d) || isCustom(d) || o.wall === "back").map((o) => `${o.kind === "window" ? "Window" : "Door"} on ${wallRef(o.wall)}: ${o.w}" x ${o.h}", ${o.at}" from ${isCustom(d) ? "its start" : `the ${o.wall === "left" || o.wall === "right" ? "back" : "left"}`}${o.kind === "window" ? `, sill ${o.sill}"` : ""}`),
     ...d.obstacles.map((b) => `${b.kind === "column" ? "Column" : `Soffit (bottom ${b.bottom}")`}: ${b.w}" x ${b.d}" at ${b.x}" from the left, ${b.z}" from the back`),
     ...activeWalls(d).map((k) => `${WALL_NAMES[k]} cabinets: ${geo[k].space}" of wall (${geo[k].free}" left open)`),
     ``,
@@ -1225,7 +1333,7 @@ document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListen
 // Pictures of the closet from several angles, for the PDF.
 function autoViews() {
   scene.update(D(), { doorsOpen: ui.doorsOpen, selected: null, sketch: ui.sketch });
-  const names = isWalk(D()) ? ["overview", "top", "cornerL", "cornerR"] : ["overview", "front", "top", "cornerL"];
+  const names = isWalk(D()) || isCustom(D()) ? ["overview", "top", "cornerL", "cornerR"] : ["overview", "front", "top", "cornerL"];
   const imgs = names.map((n) => ({ src: scene.renderView(n), name: n === "overview" ? "3D view" : VIEWS[n].name }));
   scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
   return imgs;
@@ -1248,7 +1356,7 @@ function printSummary(form) {
   <tr class="tot"><td colspan="3">Estimated MSRP${PRICES_ARE_SAMPLE ? " (sample prices)" : ""}</td><td>${money(totalPrice(d))}</td></tr></tbody></table>
   <h3>Parts to order</h3><table class="parts"><tbody>${partsList(d).map((p) => `<tr><td>${esc(p.part)}</td><td>× ${p.qty}</td></tr>`).join("")}</tbody></table>
   <p class="fine">Designs are for planning. Artisan confirms all dimensions, parts and prices before ordering.</p>` });
-  const room = `${layoutName(d)} · ${fmtIn(d.walls.back.width)} wide${isWalk(d) ? ` × ${fmtIn(roomDepth(d))} deep` : ""} · ceiling ${fmtIn(d.ceiling)}`;
+  const room = `${isCustom(d) ? roomText(d) : `${layoutName(d)} · ${roomText(d)}`} · ceiling ${fmtIn(d.ceiling)}`;
   document.querySelector("#printFrame")?.remove();
   const frame = document.createElement("iframe");
   frame.id = "printFrame";
@@ -1282,3 +1390,6 @@ function toast(msg) {
 lastGood = snap();
 remember();
 render();
+
+// Sign-in screen (demo), on top of the designer.
+initAuth();

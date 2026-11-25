@@ -1,6 +1,6 @@
 // Front elevation of each wall as SVG, with closet codes and dimensions.
 import { HEIGHT as H, TOE, DRAWER_ZONE, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES, clashSet } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES, clashSet, isCustom, wallFrame, wallLength } from "./design.js";
 
 const PAD = { l: 34, r: 14, t: 34, b: 52 };
 
@@ -85,7 +85,8 @@ function heightMarks(x, w, look) {
 export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   const geo = wallGeometry(design)[k];
   const wall = design.walls[k];
-  const W = k === "back" ? wall.width : roomDepth(design);
+  const custom = isCustom(design);
+  const W = custom ? wallLength(design, k) : k === "back" ? wall.width : roomDepth(design);
   const parts = [];
   const room = [];
   const clash = clashSet(design);
@@ -102,7 +103,14 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
     parts.push(`<g class="corner${clash.has(`corner:${side}`) ? " clash" : ""}">${drawModule(at, size, info.look, info.code, false)}</g>`);
     parts.push(dim(at, at + size, H + 10, `${size}"`));
   }
-  if (k !== "back" && !corner(k) && geo.start > 0) {
+  if (custom) {
+    // corner space taken by the next or previous wall's cabinets
+    for (const [a, b] of [[0, geo.runStart], [geo.end, W]]) {
+      if (b - a < 0.01) continue;
+      parts.push(`<rect x="${a}" y="0" width="${b - a}" height="${H}" class="deadzone"/>`);
+      parts.push(`<text x="${(a + b) / 2}" y="${H / 2}" class="deadlabel" transform="rotate(-90 ${(a + b) / 2} ${H / 2})">corner</text>`);
+    }
+  } else if (k !== "back" && !corner(k) && geo.start > 0) {
     parts.push(`<rect x="0" y="0" width="${geo.start}" height="${H}" class="deadzone"/>`);
     parts.push(`<text x="${geo.start / 2}" y="${H / 2}" class="deadlabel" transform="rotate(-90 ${geo.start / 2} ${H / 2})">back run</text>`);
   }
@@ -115,24 +123,25 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
     x += m.w;
   });
   if (geo.free > 0.01) {
-    parts.push(`<rect x="${x}" y="0" width="${geo.free}" height="${H}" class="free"/>`);
-    parts.push(dim(x, x + geo.free, H + 10, `${geo.free}" open`, "muted"));
+    const ox = geo.openAt ?? x;
+    parts.push(`<rect x="${ox}" y="0" width="${geo.free}" height="${H}" class="free"/>`);
+    parts.push(dim(ox, ox + geo.free, H + 10, `${geo.free}" open`, "muted"));
   } else if (geo.free < -0.01) {
-    parts.push(`<rect x="${W}" y="0" width="${-geo.free}" height="${H}" class="over"/>`);
+    parts.push(`<rect x="${geo.end ?? W}" y="0" width="${-geo.free}" height="${H}" class="over"/>`);
   }
   parts.push(dim(0, W, H + 24, `Wall ${fmt(W)}`, "strong"));
   // the room around the cabinets: ceiling line (with any slope), windows, doors, columns and soffits
   const RD = roomDepth(design), BW = design.walls.back.width;
   const pt = (u) => (k === "back" ? [u, 0] : k === "left" ? [0, u] : [BW, u]);
   const us = [0, W];
-  if (design.slope) for (const b of [design.slope.run, BW - design.slope.run]) if (b > 0 && b < W) us.push(b);
+  if (design.slope && !custom) for (const b of [design.slope.run, BW - design.slope.run]) if (b > 0 && b < W) us.push(b);
   us.sort((a, b) => a - b);
   const top = us.map((u) => [u, ceilingAt(design, ...pt(u))]);
   const C = Math.max(...top.map(([, h]) => h));
   room.push(`<polyline points="${top.map(([u, h]) => `${u},${H - h}`).join(" ")}" class="ceil"/>`);
   room.push(`<text x="${W - 1}" y="${H - top[top.length - 1][1] - 1.5}" class="ceil-label">Ceiling ${+top[top.length - 1][1].toFixed(2)}"</text>`);
   for (const o of design.openings) {
-    if (o.wall !== k || (!isWalk(design) && k !== "back")) continue;
+    if (o.wall !== k || (!isWalk(design) && !custom && k !== "back")) continue;
     const y0 = o.kind === "door" ? 0 : o.sill;
     room.push(`<rect x="${o.at}" y="${H - y0 - o.h}" width="${o.w}" height="${o.h}" class="opening-${o.kind}"/>`);
     room.push(`<text x="${o.at + o.w / 2}" y="${H - y0 - o.h / 2}" class="olabel">${o.kind === "window" ? "WINDOW" : "DOOR"} ${o.w}"×${o.h}"</text>`);
@@ -140,9 +149,20 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   }
   for (const b of design.obstacles) {
     // things touching this wall
-    const near = k === "back" ? b.z < 1 : k === "left" ? b.x < 1 : b.x + b.w > BW - 1;
+    let near, u0, u1;
+    if (custom) {
+      // touching this wall: its near face on the wall line, and overlapping it along the wall
+      const f = wallFrame(design, k);
+      const cs = [[b.x, b.z], [b.x + b.w, b.z], [b.x, b.z + b.d], [b.x + b.w, b.z + b.d]];
+      const ts = cs.map(([x, z]) => (x - f.A[0]) * f.u[0] + (z - f.A[1]) * f.u[1]);
+      const vs = cs.map(([x, z]) => (x - f.A[0]) * f.n[0] + (z - f.A[1]) * f.n[1]);
+      u0 = Math.max(0, Math.min(...ts)); u1 = Math.min(W, Math.max(...ts));
+      near = Math.min(...vs) < 1 && Math.max(...vs) > 0 && u1 - u0 > 0.5;
+    } else {
+      near = k === "back" ? b.z < 1 : k === "left" ? b.x < 1 : b.x + b.w > BW - 1;
+      [u0, u1] = k === "back" ? [b.x, b.x + b.w] : [b.z, b.z + b.d];
+    }
     if (!near) continue;
-    const [u0, u1] = k === "back" ? [b.x, b.x + b.w] : [b.z, b.z + b.d];
     const y0 = b.kind === "soffit" ? b.bottom : 0;
     const yTop = ceilingAt(design, b.x + b.w / 2, b.z + b.d / 2);
     room.push(`<rect x="${u0}" y="${H - yTop}" width="${u1 - u0}" height="${yTop - y0}" class="obst"/>`);

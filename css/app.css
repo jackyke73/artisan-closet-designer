@@ -439,3 +439,58 @@ details.roomx > summary em { font-style: normal; background: var(--ink); color: 
 .warn-box .warn { margin: 0 0 6px; }
 .warn-box small { color: var(--muted); font-size: 11px; }
 .dim3d.clash { background: #d1150b; color: #fff; font-weight: 600; }
+
+/* ---- custom rooms ---- */
+.layouts.six .layout.wide-tile { grid-column: 1 / -1; grid-template-columns: auto 1fr; justify-items: start; align-items: center; text-align: left; gap: 10px; padding: 8px 12px; }
+.layout.wide-tile span { display: grid; gap: 1px; }
+.layout.wide-tile small { font-size: 11px; color: var(--muted); font-weight: 400; }
+.layout path.outline { fill: var(--oak); }
+.layout path.jog { fill: none; stroke: var(--ink); stroke-width: 1.4; stroke-dasharray: 2 2; }
+.custom-room { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: #fcfbf8; }
+.shape-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.shape-row > span { color: var(--muted); margin-right: 2px; }
+.shape-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px 4px 6px; }
+.shape-btn svg { width: 20px; height: 18px; }
+.shape-btn path { fill: var(--oak); }
+.wrows { margin-top: 10px; display: grid; gap: 4px; }
+.wrow { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; font-size: 13px; }
+.wrow.head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.wrow .check { margin: 0; }
+.wrow .inch input { width: 72px; }
+.plan .cwall .grab { fill: transparent; stroke: none; }
+.plan .cwall.h { cursor: ns-resize; }
+.plan .cwall.v { cursor: ew-resize; }
+.plan .cwall:hover .wall { fill: #5a4a35; }
+.plan .wname { fill: var(--muted); font-size: 4px; }
+.plan .dim.wlen text { font-weight: 600; }
+.elev-view.measuring .cwall { cursor: crosshair; }
+@media print { .plan .cwall .grab { display: none; } }
+
+/* ---- sign-in (demo) ---- */
+.account { position: relative; margin-left: 4px; }
+.acct-btn { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: #fff; border-radius: 99px; padding: 3px 10px 3px 3px; font-size: 12px; max-width: 200px; }
+.acct-btn i { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; font-style: normal; font-weight: 600; display: grid; place-items: center; }
+.acct-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-menu { position: absolute; right: 0; top: calc(100% + 6px); background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.12); padding: 12px; width: 230px; z-index: 60; font-size: 12px; }
+.acct-menu p { margin: 0 0 10px; color: var(--muted); overflow-wrap: anywhere; }
+.acct-menu b { color: var(--ink); }
+body.gated .app, body.gated .top > :not(.brand):not(.product) { filter: blur(3px); pointer-events: none; user-select: none; }
+.signin-gate { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgba(236, 232, 225, .62); }
+.signin-card { width: min(420px, 100%); background: #fff; border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,.18); padding: 26px 26px 18px; }
+.signin-brand { font-weight: 700; font-size: 22px; letter-spacing: -.02em; display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.signin-brand span { font-size: 10px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: #c0392b; }
+.signin-card h2 { font-size: 19px; margin: 0 0 6px; }
+.signin-card p { font-size: 13px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.signin-card form { display: grid; gap: 10px; }
+.signin-card label { display: grid; gap: 4px; font-size: 12px; font-weight: 500; }
+.signin-card input { font: inherit; font-size: 15px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.signin-card input[name="code"] { letter-spacing: .4em; font-variant-numeric: tabular-nums; }
+.wide-btn { width: 100%; justify-content: center; padding: 11px 14px; }
+.signin-card .or { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--muted); font-size: 11px; }
+.signin-card .or::before, .signin-card .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.signin-err { color: #b3120a !important; margin: -2px 0 0 !important; font-size: 12px !important; }
+.signin-links { margin: 12px 0 0 !important; font-size: 12px !important; }
+.signin-links .link { border: 0; background: none; padding: 0; color: var(--ink); text-decoration: underline; font: inherit; cursor: pointer; }
+.signin-demo { margin: 16px 0 0 !important; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 11px !important; }
+@media (max-width: 700px) { .acct-btn span { display: none; } .acct-btn { padding: 2px; } }
+@media print { .signin-gate, .account { display: none; } }

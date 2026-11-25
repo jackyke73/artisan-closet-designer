@@ -6,7 +6,13 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import { fmtIn } from "./units.js";
 import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt, insideShape, boxInShape, wallFrame, WALL_NAMES } from "./design.js";
+
+// Turn a group built along +x (out of the wall along +z) onto a wall frame, `t` along it.
+function onFrame(o, f, t) {
+  o.rotation.y = Math.atan2(-f.u[1], f.u[0]);
+  o.position.set(f.A[0] + f.u[0] * t, 0, f.A[1] + f.u[1] * t);
+}
 
 const OPEN_ANGLE = 1.75; // about 100 degrees
 const GARMENT_COLORS = ["#2f3640", "#4a5568", "#d9d4c7", "#8b7d6b", "#1f2a44", "#b9a58b", "#e8e4dc", "#5c4b3b", "#7a8a99"];
@@ -325,10 +331,12 @@ export class ClosetScene {
     this.decor = design.room?.decor !== false;
     const walls = activeWalls(design);
     const geo = wallGeometry(design);
-    const W = design.walls.back.width;
+    const custom = isCustom(design);
+    const box = custom ? shapeBox(design) : null;
+    const W = custom ? box.W : design.walls.back.width;
     const sideLen = roomDepth(design);
-    const layout = isWalk(design) ? "walk" : "reach";
-    this._room(design, W, sideLen);
+    const layout = isWalk(design) || custom ? "walk" : "reach";
+    if (custom) this._roomCustom(design, W, sideLen); else this._room(design, W, sideLen);
     const clash = clashSet(design);
 
     const place = (k, m, i, s) => {
@@ -336,7 +344,8 @@ export class ClosetScene {
       const d = DEPTHS[m.depth].inches;
       const g = this._module(info.look, m.w, d, { hinge: m.hinge, doorsOpen, seed: i * 31 + k.length });
       g.userData.pick = { wall: k, index: i };
-      if (k === "back") g.position.set(s, 0, 0);
+      if (custom) onFrame(g, wallFrame(design, k), s);
+      else if (k === "back") g.position.set(s, 0, 0);
       if (k === "left") { g.rotation.y = Math.PI / 2; g.position.set(0, 0, s + m.w); }
       if (k === "right") { g.rotation.y = -Math.PI / 2; g.position.set(W, 0, s); }
       this.root.add(g);
@@ -359,8 +368,13 @@ export class ClosetScene {
 
     this.bounds = { W, D: sideLen, H: Math.max(design.ceiling || 96, H), t: design.wallT || 4.5, walk: layout === "walk" };
     this._buildDims(design, geo, walls);
-    const key = `${layout}|${W}|${sideLen}|${this.look}`;
+    const key = `${layout}|${W}|${sideLen}|${this.look}|${custom ? design.shape.pts.join() : ""}`;
     this.eye.set(W / 2, Math.min(EYE, (design.ceiling || 96) - 12), layout === "reach" ? 30 + 84 : Math.max(sideLen - 10, 40));
+    if (custom) {
+      // stand near the middle of the room, or in front of the longest wall if that is outside an L
+      const [ex, ez] = this._insidePoint(design);
+      this.eye.set(ex, this.eye.y, ez);
+    }
     if (key !== this.frameKey) {
       this.frameKey = key;
       if (this.look) this._placeEye(); else this._applyView(true);
@@ -610,6 +624,13 @@ export class ClosetScene {
     const p = this.camera.position;
     for (const o of this.cutters) {
       const k = o.userData.side;
+      const f = o.userData.frame;
+      if (f) {
+        // custom room: walls the camera is behind are always left out, like the front of a box room
+        const behind = (p.x - f.A[0]) * f.n[0] + (p.z - f.A[1]) * f.n[1] < -1;
+        o.visible = !(!this.look && behind);
+        continue;
+      }
       const behind = k === "back" ? p.z < -1 : k === "front" ? p.z > b.D + 1 : k === "left" ? p.x < -1 : p.x > b.W + 1;
       o.visible = !(this.cut && !this.look && behind);
     }
@@ -634,6 +655,7 @@ export class ClosetScene {
     const g = this.dimGroup;
     this._clearGroup(g);
     if (!this.showDims) return;
+    if (isCustom(design)) return this._buildDimsCustom(design, geo, walls);
     const W = design.walls.back.width, RD = roomDepth(design);
     const walk = isWalk(design);
     const pts = [];
@@ -676,6 +698,53 @@ export class ClosetScene {
     const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), this.mat.dimLine);
     lines.renderOrder = 10;
     g.add(lines);
+  }
+
+  // Custom room: module chains and each wall's length along the top of the walls.
+  _buildDimsCustom(design, geo, walls) {
+    const g = this.dimGroup;
+    const pts = [];
+    const seg = (a, b) => pts.push(a, b);
+    const P = (f, t, y, v) => new THREE.Vector3(f.A[0] + f.u[0] * t + f.n[0] * v, y, f.A[1] + f.u[1] * t + f.n[1] * v);
+    const chain = (f, marks, y, v, labels, cls) => {
+      seg(P(f, marks[0], y, v), P(f, marks[marks.length - 1], y, v));
+      for (const t of marks) seg(P(f, t, y - 1.6, v), P(f, t, y + 1.6, v));
+      labels.forEach(([t, text]) => g.add(this._label(text, P(f, t, y + 2.2, v), cls)));
+    };
+    for (const f of shapeWalls(design)) {
+      const mods = design.walls[f.k].modules;
+      if (walls.includes(f.k) && mods.length) {
+        let s = geo[f.k].start;
+        const marks = [s], labels = [];
+        let deep = 0;
+        for (const m of mods) {
+          labels.push([s + m.w / 2, fmtIn(m.w, { feet: false })]);
+          s += m.w; marks.push(s);
+          deep = Math.max(deep, DEPTHS[m.depth].inches);
+        }
+        chain(f, marks, H + 3, deep + 1.5, labels, "");
+      }
+      chain(f, [0, f.len], H + 11, 1.5, [[f.len / 2, `${WALL_NAMES[f.k]} ${fmtIn(f.len)}`]], "strong");
+    }
+    const ceil = design.ceiling || 96;
+    const [hx, hz] = this._insidePoint(design);
+    seg(new THREE.Vector3(hx, 0, hz), new THREE.Vector3(hx, ceil, hz));
+    for (const y of [0, H, ceil]) seg(new THREE.Vector3(hx - 1.6, y, hz), new THREE.Vector3(hx + 1.6, y, hz));
+    g.add(this._label(`Ceiling ${fmtIn(ceil)}`, new THREE.Vector3(hx, ceil - 4, hz), "strong"));
+    g.add(this._label(`Cabinets ${H}"`, new THREE.Vector3(hx, H / 2, hz), ""));
+    const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), this.mat.dimLine);
+    lines.renderOrder = 10;
+    g.add(lines);
+  }
+
+  // A floor point well inside a custom room: the middle of its outline box if that is inside,
+  // otherwise 30" in from the middle of its longest wall.
+  _insidePoint(design) {
+    const b = shapeBox(design);
+    const c = [b.x0 + b.W / 2, b.z0 + b.D / 2];
+    if (insideShape(design.shape.pts, ...c)) return c;
+    const f = shapeWalls(design).reduce((a, w) => (w.len > a.len ? w : a));
+    return [f.A[0] + f.u[0] * f.len / 2 + f.n[0] * 30, f.A[1] + f.u[1] * f.len / 2 + f.n[1] * 30];
   }
 
   setDims(on) { this.showDims = on; }
@@ -888,6 +957,81 @@ export class ClosetScene {
     this.root.add(g);
   }
 
+  // A custom room: one wall slab per side of the outline, growing outward, with windows and
+  // doors cut out. At an inside corner the earlier wall runs on over the corner post.
+  _roomCustom(design, W, roomD) {
+    const room = design.room || { wall: "white", floor: "oak", decor: true };
+    this.mat.wall.color.set(ROOM_WALLS[room.wall]?.color || "#f3efe8");
+    this.mat.floor = this._floorMat(room.floor in ROOM_FLOORS ? room.floor : "oak");
+    const g = new THREE.Group();
+    this.cutters = [];
+    const floorW = W + 200, floorD = roomD + 200;
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(floorW, floorD), this.mat.floor);
+    floor.receiveShadow = true;
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(W / 2, 0, roomD / 2);
+    g.add(floor);
+    const t = design.wallT || 4.5;
+    const ceil = design.ceiling || 96;
+    const ws = shapeWalls(design);
+    ws.forEach((f, i) => {
+      const next = ws[(i + 1) % ws.length];
+      const u0 = insideCornerAt(ws, i) ? 0 : t;                // an outside corner is covered by the wall before
+      const u1 = f.len + (insideCornerAt(ws, next.i) ? t : 0);  // an inside corner: run over the corner post
+      if (u1 - u0 < 0.05) return;
+      const shape = new THREE.Shape();
+      shape.moveTo(u0, 0); shape.lineTo(u1, 0); shape.lineTo(u1, ceil); shape.lineTo(u0, ceil); shape.closePath();
+      for (const o of design.openings) {
+        if (o.wall !== f.k) continue;
+        const a = Math.max(o.at, u0 + 0.1), b = Math.min(o.at + o.w, u1 - 0.1);
+        const y0 = o.kind === "door" ? 0.01 : o.sill, y1 = Math.min(y0 + o.h, ceil - 0.5);
+        if (b - a < 1 || y1 - y0 < 1) continue;
+        const hole = new THREE.Path();
+        hole.moveTo(a, y0); hole.lineTo(b, y0); hole.lineTo(b, y1); hole.lineTo(a, y1); hole.closePath();
+        shape.holes.push(hole);
+      }
+      const m = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false }), this.mat.wall);
+      m.receiveShadow = true;
+      // extruded along local +z, which onFrame turns to the room side; start it t outside the wall line
+      onFrame(m, { ...f, A: [f.A[0] - f.n[0] * t, f.A[1] - f.n[1] * t] }, 0);
+      m.userData.side = f.k;
+      m.userData.frame = f;
+      this.cutters.push(m);
+      g.add(m);
+    });
+    for (const o of design.openings) this._openingFill(g, design, o, W, roomD, t);
+    for (const b of design.obstacles || []) {
+      const y0 = b.kind === "soffit" ? b.bottom : 0;
+      if (ceil - y0 > 0.5) this._box(g, this.mat.wall, [b.x, b.x + b.w], [y0, ceil], [b.z, b.z + b.d]).userData.obstacle = true;
+    }
+    if (this.look) {
+      // ceiling over the outline
+      const sh = new THREE.Shape(design.shape.pts.map(([x, z]) => new THREE.Vector2(x, z)));
+      const c = new THREE.Mesh(new THREE.ShapeGeometry(sh), this.mat.ceilingBoth || (this.mat.ceilingBoth = this.mat.ceiling.clone()));
+      this.mat.ceilingBoth.side = THREE.DoubleSide;
+      c.rotation.x = Math.PI / 2;
+      c.position.y = ceil;
+      g.add(c);
+    }
+    if (this.decor) {
+      // a rug in the middle, if it fits
+      const [cx, cz] = this._insidePoint(design);
+      const pts = design.shape.pts;
+      for (const [w, l] of [[60, 84], [48, 60], [36, 48]]) {
+        const rug = { x: [cx - w / 2, cx + w / 2], z: [cz - l / 2, cz + l / 2] };
+        const clear = (b) => boxInShape(pts, { x: [b.x[0] - 18, b.x[1] + 18], z: [b.z[0] - 18, b.z[1] + 18] });
+        if (!clear(rug)) continue;
+        const d = new THREE.Group();
+        d.userData.soft = true;
+        this._box(d, this.mat.rugEdge, rug.x, [0, 0.25], rug.z).castShadow = false;
+        this._box(d, this.mat.rug, [rug.x[0] + 2, rug.x[1] - 2], [0.25, 0.4], [rug.z[0] + 2, rug.z[1] - 2]).castShadow = false;
+        g.add(d);
+        break;
+      }
+    }
+    this.root.add(g);
+  }
+
   // Glass in a window opening, a door leaf in a door opening, with trim on the room side.
   _openingFill(g, design, o, W, roomD, t) {
     const grp = new THREE.Group();
@@ -910,6 +1054,16 @@ export class ClosetScene {
     for (const [x0, x1] of [[-trim, 0], [o.w, o.w + trim]]) box(this.mat.trim, [x0, x1], [y0, y0 + h + trim], [0, 0.6]);
     box(this.mat.trim, [-trim, o.w + trim], [y0 + h, y0 + h + trim], [0, 0.6]);
     // grp is built facing +z on the back wall; turn it onto its wall
+    if (isCustom(design)) {
+      const f = wallFrame(design, o.wall);
+      if (!f) return;
+      onFrame(grp, f, o.at);
+      grp.userData.side = o.wall;
+      grp.userData.frame = f;
+      this.cutters.push(grp);
+      g.add(grp);
+      return;
+    }
     if (o.wall === "back") grp.position.set(o.at, 0, 0);
     if (o.wall === "front") { grp.rotation.y = Math.PI; grp.position.set(o.at + o.w, 0, roomD); }
     if (o.wall === "left") { grp.rotation.y = Math.PI / 2; grp.position.set(0, 0, o.at + o.w); }

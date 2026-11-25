@@ -2,7 +2,7 @@
 // Plan coordinates match the 3D view: x runs along the back wall, y (the 3D z)
 // comes out from the back wall into the room.
 import { DEPTHS, HEIGHT, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES, clashSet } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt } from "./design.js";
 
 let WALL = 4.5;     // drawn wall thickness, set from the design
 const REACH_DEPTH = 30; // drawn depth of a reach-in closet
@@ -22,7 +22,7 @@ function dimV(y0, y1, x, label, cls = "") {
 }
 
 // One module in its own coordinates: x along the wall (0..w), y out from the wall (0..d).
-function moduleShape(m, info, selected) {
+function moduleShape(m, info, selected, upright = "") {
   const d = DEPTHS[m.depth].inches;
   const w = m.w;
   const look = info.look;
@@ -41,8 +41,9 @@ function moduleShape(m, info, selected) {
     });
   }
   if (look.drawers) s.push(`<line x1="0.6" x2="${w - 0.6}" y1="${d - 1.6}" y2="${d - 1.6}" class="thin"/>`);
-  s.push(`<text x="${w / 2}" y="${d / 2 - 0.6}" class="code">${info.code}</text>`);
-  s.push(`<text x="${w / 2}" y="${d / 2 + 3.6}" class="size">${w}" × ${d}"</text>`);
+  // upright: a transform that keeps the labels readable on walls drawn upside down
+  s.push(`<g${upright}><text x="${w / 2}" y="${d / 2 - 0.6}" class="code">${info.code}</text>`);
+  s.push(`<text x="${w / 2}" y="${d / 2 + 3.6}" class="size">${w}" × ${d}"</text></g>`);
   return s.join("");
 }
 
@@ -114,7 +115,118 @@ function clearances(design, W, RD) {
   return out;
 }
 
+// A dimension line from a to b (floor points), with the label turned to read along it.
+function dimAt(a, b, label, cls = "") {
+  const [x0, y0] = a, [x1, y1] = b;
+  const len = Math.hypot(x1 - x0, y1 - y0) || 1;
+  const nx = -(y1 - y0) / len * 2.5, ny = (x1 - x0) / len * 2.5;
+  let ang = (Math.atan2(y1 - y0, x1 - x0) * 180) / Math.PI;
+  if (ang > 90.5 || ang <= -89.5) ang += 180;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const off = 1.6;
+  // text sits on the side the line was offset to (above it when read)
+  const r = (ang * Math.PI) / 180;
+  const tx = mx + Math.sin(r) * off, ty = my - Math.cos(r) * off;
+  return `<g class="dim ${cls}"><line x1="${n(x0)}" y1="${n(y0)}" x2="${n(x1)}" y2="${n(y1)}"/>` +
+    `<line x1="${n(x0 - nx)}" y1="${n(y0 - ny)}" x2="${n(x0 + nx)}" y2="${n(y0 + ny)}"/><line x1="${n(x1 - nx)}" y1="${n(y1 - ny)}" x2="${n(x1 + nx)}" y2="${n(y1 + ny)}"/>` +
+    `<text x="${n(tx)}" y="${n(ty)}" transform="rotate(${n(ang)} ${n(tx)} ${n(ty)})">${label}</text></g>`;
+}
+
+// Floor plan of a custom room: the outline's walls (which can be dragged to resize the room),
+// windows and doors, cabinets on any wall, and every wall's length.
+function customPlan(design, selected, { grid = false } = {}) {
+  WALL = design.wallT || 4.5;
+  const ws = shapeWalls(design);
+  const geo = wallGeometry(design);
+  const box = shapeBox(design);
+  const clash = clashSet(design);
+  const out = [], over = [], dims = [];
+  const P = (f, t, off) => [f.A[0] + f.u[0] * t - f.n[0] * off, f.A[1] + f.u[1] * t - f.n[1] * off]; // off: out of the room
+  const quad = (f, t0, t1, o0, o1) => [P(f, t0, o0), P(f, t1, o0), P(f, t1, o1), P(f, t0, o1)].map((p) => p.map(n).join(",")).join(" ");
+  ws.forEach((f, i) => {
+    const next = ws[(i + 1) % ws.length];
+    const t0 = insideCornerAt(ws, i) ? 0 : 0, t1 = f.len + (insideCornerAt(ws, next.i) ? WALL : 0);
+    const ops = design.openings.filter((o) => o.wall === f.k).sort((a, b) => a.at - b.at);
+    // the wall as solid pieces around its openings, plus an invisible wider strip to grab
+    let u = t0;
+    const pieces = [];
+    for (const o of ops) { if (o.at > u) pieces.push([u, o.at]); u = Math.max(u, o.at + o.w); }
+    if (t1 > u) pieces.push([u, t1]);
+    out.push(`<g class="cwall ${Math.abs(f.u[0]) > 0.5 ? "h" : "v"}" data-edge="${i}">${pieces.map(([a, b]) => `<polygon points="${quad(f, a, b, 0, WALL)}" class="wall"/>`).join("")}` +
+      `<polygon points="${quad(f, 0, f.len, -3, WALL + 3)}" class="grab"/></g>`);
+    for (const o of ops) {
+      if (o.kind === "window") {
+        out.push(`<polygon points="${quad(f, o.at, o.at + o.w, 0, WALL)}" class="winbox"/>`);
+        const [a, b] = [P(f, o.at, WALL / 2), P(f, o.at + o.w, WALL / 2)];
+        out.push(`<line x1="${n(a[0])}" y1="${n(a[1])}" x2="${n(b[0])}" y2="${n(b[1])}" class="glass"/>`);
+      } else {
+        const inward = o.swing !== "out";
+        const face = inward ? 0 : WALL, r = o.w;
+        const H0 = P(f, o.at, face), E = P(f, o.at + o.w, face), L = P(f, o.at, face + (inward ? -r : r));
+        const cross = (L[0] - H0[0]) * (E[1] - H0[1]) - (L[1] - H0[1]) * (E[0] - H0[0]);
+        out.push(`<line x1="${n(H0[0])}" y1="${n(H0[1])}" x2="${n(L[0])}" y2="${n(L[1])}" class="doorleaf"/>`);
+        out.push(`<path d="M${n(L[0])} ${n(L[1])} A${r} ${r} 0 0 ${cross > 0 ? 1 : 0} ${n(E[0])} ${n(E[1])}" class="swing"/>`);
+      }
+      const [tx, ty] = P(f, o.at + o.w / 2, -5);
+      let ang = (Math.atan2(f.u[1], f.u[0]) * 180) / Math.PI;
+      if (ang > 90.5 || ang <= -89.5) ang += 180;
+      over.push(`<text x="${n(tx)}" y="${n(ty)}" class="note" transform="rotate(${n(ang)} ${n(tx)} ${n(ty)})">${o.kind === "window" ? "Window" : "Door"} ${o.w}"</text>`);
+    }
+    // cabinets
+    let s = geo[f.k]?.start || 0;
+    const upright = f.u[0] < -0.5 || f.u[1] > 0.5;
+    const cabs = design.cab[f.k] ? design.walls[f.k].modules : [];
+    const marks = [s];
+    cabs.forEach((m, j) => {
+      const info = moduleInfo(m);
+      const sel = selected && selected.wall === f.k && selected.index === j;
+      const t = `matrix(${f.u[0]} ${f.u[1]} ${f.n[0]} ${f.n[1]} ${n(f.A[0] + f.u[0] * s)} ${n(f.A[1] + f.u[1] * s)})`;
+      const d = DEPTHS[m.depth].inches;
+      const flip = upright ? ` transform="rotate(180 ${m.w / 2} ${d / 2 + 1.5})"` : "";
+      out.push(`<g class="mod${clash.has(`${f.k}:${j}`) ? " clash" : ""}" data-wall="${f.k}" data-index="${j}" transform="${t}">${moduleShape(m, info, sel, flip)}</g>`);
+      s += m.w;
+      marks.push(s);
+    });
+    // dimensions outside the wall: module widths, then the wall's length
+    let off = WALL + 7;
+    if (cabs.length) {
+      for (let j = 0; j < cabs.length; j++) dims.push(dimAt(P(f, marks[j], off), P(f, marks[j + 1], off), `${cabs[j].w}"`));
+      const g = geo[f.k];
+      if (g.free > 0.01) dims.push(dimAt(P(f, g.openAt, off), P(f, g.openAt + g.free, off), `${g.free}" open`, "muted"));
+      off += 9;
+    }
+    dims.push(dimAt(P(f, 0, off), P(f, f.len, off), `${WALL_NAMES[f.k]} · ${n(f.len)}"`, "strong wlen"));
+    // wall name inside the room
+    const tName = [0.5, 0.25, 0.75, 0.15, 0.85].map((q) => f.len * q).find((t) => !ops.some((o) => t > o.at - 10 && t < o.at + o.w + 10)) ?? f.len / 2;
+    const [lx, ly] = P(f, tName, -6);
+    if (!cabs.length && f.len >= 30) over.push(`<text x="${n(lx)}" y="${n(ly)}" class="note wname">${WALL_NAMES[f.k]}</text>`);
+  });
+  for (const b of design.obstacles) {
+    over.push(`<rect x="${b.x}" y="${b.z}" width="${b.w}" height="${b.d}" class="${b.kind === "column" ? "column" : "soffit"}"/>`);
+    over.push(`<text x="${b.x + b.w / 2}" y="${b.z + b.d / 2 + 1}" class="note">${b.kind === "column" ? "Column" : `Soffit ${b.bottom}"`}</text>`);
+  }
+  const pad = WALL + 30;
+  const x0 = box.x0 - pad, y0 = box.z0 - pad, x1 = box.x0 + box.W + pad, y1 = box.z0 + box.D + pad;
+  const poly = design.shape.pts.map((p) => p.join(",")).join(" ");
+  let gridLines = "";
+  if (grid) {
+    const g = [];
+    for (let x = 12; x < box.W; x += 12) g.push(`<line x1="${x}" x2="${x}" y1="0" y2="${box.D}" class="${x % 48 ? "" : "major"}"/>`);
+    for (let y = 12; y < box.D; y += 12) g.push(`<line x1="0" x2="${box.W}" y1="${y}" y2="${y}" class="${y % 48 ? "" : "major"}"/>`);
+    gridLines = `<clipPath id="roomclip"><polygon points="${poly}"/></clipPath><g class="grid" clip-path="url(#roomclip)">${g.join("")}</g>`;
+  }
+  return `<figure class="elev plan custom" data-key="plan"><figcaption>Floor plan · custom room${grid ? " · grid 1 ft" : ""} · drag a wall to move it</figcaption>
+  <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" preserveAspectRatio="xMidYMid meet">
+    <polygon points="${poly}" class="floorarea"/>
+    ${gridLines}
+    ${out.join("")}
+    ${over.join("")}
+    ${dims.join("")}
+  </svg></figure>`;
+}
+
 export function planHtml(design, selected, { grid = false, clear = true } = {}) {
+  if (isCustom(design)) return customPlan(design, selected, { grid });
   WALL = design.wallT || 4.5;
   const walls = activeWalls(design);
   const geo = wallGeometry(design);
