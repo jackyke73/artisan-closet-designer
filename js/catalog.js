@@ -141,6 +141,31 @@ export const FILLER = {
 export const styleById = Object.fromEntries([...STYLES, FILLER].map((s) => [s.id, s]));
 export const clampFiller = (w) => Math.min(FILLER_MAX, Math.max(FILLER_MIN, Math.round((+w || 0) * 4) / 4));
 
+// Crown moulding along the tops of the cabinets, in the cabinet finish. Sold in 8' lengths,
+// cut and mitered on site. PART NUMBERS AND PROFILES ARE PLACEHOLDERS until Artisan confirms them.
+// Profile points are (out, up) in inches: `out` from the cabinet fronts, `up` from the cabinet top.
+// The part behind the fronts (out < 0) sits on the cabinet top.
+export const CROWN_STICK = 96;
+const arc = (n, f) => Array.from({ length: n + 1 }, (_, i) => f(i / n));
+export const CROWNS = {
+  flat: {
+    name: "Flat", note: "a clean, modern step", h: 3, proj: 1,
+    part: "Crown moulding, flat 8' (cut to fit)",
+    pts: [[-1.5, 0], [0.25, 0], [0.25, 2.25], [1, 2.25], [1, 3], [-1.5, 3]],
+  },
+  cove: {
+    name: "Cove", note: "a soft curve, transitional", h: 2.75, proj: 1.75,
+    part: "Crown moulding, cove 8' (cut to fit)",
+    pts: [[-1.5, 0], [0.25, 0], ...arc(10, (t) => [1.5 + 1.25 * Math.cos(Math.PI * (1 - t / 2)), 0.5 + 1.25 * Math.sin(Math.PI * (1 - t / 2))]), [1.75, 1.75], [1.75, 2.75], [-1.5, 2.75]],
+  },
+  classic: {
+    name: "Classic", note: "a traditional ogee with a bead", h: 4, proj: 2.5,
+    part: "Crown moulding, classic 8' (cut to fit)",
+    pts: [[-1.5, 0], [0.3, 0], [0.3, 0.6], ...arc(6, (t) => [0.3 + 0.3 * Math.sin(Math.PI * t), 0.9 - 0.3 * Math.cos(Math.PI * t)]).slice(1),
+      ...arc(14, (t) => [0.3 + 1.9 * (1 - Math.cos(Math.PI * t)) / 2, 1.2 + 2 * t]).slice(1), [2.5, 3.2], [2.5, 4], [-1.5, 4]],
+  },
+};
+
 // Easy-reach corner modules (catalog p.5): an L footprint of size x size.
 export const CORNERS = [
   { code: "ER3090", size: 30, depth: "S", backPart: "SO CBP3015", tb: "SO CTB3015", shelf: "SO S30ER", side: "SO SP1590" },

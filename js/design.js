@@ -1,5 +1,5 @@
 // The design: room, walls, modules, corners. Pure data and math, no DOM.
-import { DEPTHS, HEIGHT, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS, FILLER_MAX, FILLER_MIN, clampFiller, customLook, customParts, customCode, customName, normalizeCustom, customFromLook, STYLES } from "./catalog.js";
+import { DEPTHS, HEIGHT, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS, FILLER_MAX, FILLER_MIN, clampFiller, customLook, customParts, customCode, customName, normalizeCustom, customFromLook, STYLES, CROWNS, CROWN_STICK } from "./catalog.js";
 import { priceOf } from "./pricing.js";
 
 // A reach-in has cabinets on its back wall only. A walk-in can have cabinets
@@ -62,6 +62,7 @@ export function defaultDesign() {
     },
     corners: { left: null, right: null }, // { code, interior }
     room: defaultRoom(),
+    crown: null,       // crown moulding profile (a key of CROWNS), or none
     wallT: WALL_T.def,
     ceiling: CEILING.def,
     slope: null,       // { wall: "left" | "back" | "right", knee, run }: an attic ceiling coming down to that wall
@@ -327,6 +328,11 @@ export function toCustom(design) {
 }
 export const cornerOn = (design, side) => isWalk(design) && design.cab.back && design.cab[side] && design.corners[side] ? design.corners[side] : null;
 
+// Crown moulding on top of the cabinets, if any, and the height to the top of it.
+export const crownOf = (design) => CROWNS[design.crown] || null;
+export const cabinetTop = (design) => HEIGHT + (crownOf(design)?.h || 0);
+const topLabel = (design) => (crownOf(design) ? `${cabinetTop(design)}" cabinets with crown moulding` : `${HEIGHT}" cabinets`);
+
 // Ceiling height at a floor point (x across, z out from the back wall).
 export function ceilingAt(design, x, z) {
   const c = design.ceiling || CEILING.def;
@@ -574,6 +580,8 @@ export function lineItems(design) {
   for (const k of walls) {
     design.walls[k].modules.forEach((m, i) => items.push({ wall: WALL_NAMES[k], index: i, module: m, ...moduleInfo(m) }));
   }
+  const crown = crownItem(design);
+  if (crown) items.push(crown);
   return items;
 }
 
@@ -622,18 +630,89 @@ export function footprints(design) {
   return boxes;
 }
 
+// --- crown moulding -----------------------------------------------------------------
+// Where the crown turns back along a cabinet's side. For every module, `lo` and `hi` are how
+// much of its side is open at each end (lo: the end at the start of the wall's run), measured
+// back from the front: 0 when it butts a wall or a cabinet at least as deep, the full depth when
+// nothing is beside it. Probes just past each end, from the front back toward the wall.
+export function crownPlan(design) {
+  if (!crownOf(design)) return null;
+  const boxes = footprints(design);
+  const cols = design.obstacles.filter((o) => o.kind === "column").map((b) => ({ x: [b.x, b.x + b.w], z: [b.z, b.z + b.d] }));
+  const custom = isCustom(design);
+  const W = design.walls.back.width, RD = roomDepth(design);
+  const inRoom = (x, z) => (custom ? insideShape(design.shape.pts, x, z) : x > 0 && x < W && z > 0 && z < RD);
+  const inBox = (b, x, z) => x > b.x[0] && x < b.x[1] && z > b.z[0] && z < b.z[1];
+  const geo = wallGeometry(design);
+  const back = -Math.min(...crownOf(design).pts.map(([o]) => o)); // how far the crown reaches back over the top
+  const plan = {};
+  for (const k of activeWalls(design)) {
+    const f = wallFrame(design, k);
+    let s = geo[k].start;
+    plan[k] = design.walls[k].modules.map((m, i) => {
+      const d = depthOf(m);
+      const open = (along) => {
+        for (let out = d - 0.25; out > 0; out -= 0.5) {
+          const [x, z] = onWall(f, s, m.w, along, out);
+          const covered = !inRoom(x, z) || cols.some((b) => inBox(b, x, z)) ||
+            boxes.some((b) => !(b.wall === k && b.index === i) && inBox(b, x, z));
+          if (covered) { const o = d - out - 0.25; return o < 0.5 ? 0 : +o.toFixed(2); }
+        }
+        return d;
+      };
+      // where a cabinet on the next wall stands in front of this one (an inside corner), the
+      // front length stops where that cabinet's crown begins, so the two meet in the corner
+      const other = (x, z) => boxes.some((b) => b.wall !== k && inBox(b, x, z));
+      const trim = (from, dir) => {
+        let a = 0;
+        while (a < m.w && other(...onWall(f, s, m.w, from + dir * (a + 0.25), d + 0.5))) a += 0.5;
+        return a > 0 ? Math.max(0, a + 0.75 - back) : 0;
+      };
+      const cutLo = trim(0, 1), cutHi = trim(m.w, -1);
+      // an end tucked behind the next wall's cabinets can't be seen, so it gets no return
+      const r = { d, w: m.w, lo: cutLo ? 0 : open(-0.5), hi: cutHi ? 0 : open(m.w + 0.5), cutLo, cutHi };
+      s += m.w;
+      return r;
+    });
+  }
+  return plan;
+}
+
+// The crown as one line of the order: total length, rounded up to whole 8' lengths with
+// 10% for miters and cutting.
+export function crownItem(design) {
+  const cr = crownOf(design);
+  const plan = crownPlan(design);
+  if (!cr || !plan) return null;
+  let inches = 0;
+  for (const k of Object.keys(plan)) for (const p of plan[k]) inches += p.w - p.cutLo - p.cutHi + p.lo + p.hi;
+  for (const side of ["left", "right"]) {
+    const c = cornerOn(design, side);
+    if (c) { const cc = cornerByCode[c.code]; inches += 2 * (cc.size - DEPTHS[cc.depth].inches); }
+  }
+  if (inches <= 0) return null;
+  const sticks = Math.ceil((inches * 1.1) / CROWN_STICK);
+  const parts = [[cr.part, sticks]];
+  return {
+    wall: "Top of the cabinets", crown: true, code: `CROWN-${design.crown.toUpperCase()}`,
+    name: `${cr.name} crown moulding, ${Math.ceil(inches / 12)} ft (${sticks} × 8')`,
+    parts, price: sumParts(parts), inches,
+  };
+}
+
 // Fixed things in the room that cabinets can't go over.
 function roomBlocks(design) {
   const out = [];
   const front = isWalk(design);
   const custom = isCustom(design);
+  const top = cabinetTop(design);
   design.openings.forEach((o, i) => {
     if (custom ? !design.walls[o.wall] : o.wall === "front" ? !front : o.wall !== "back" && !front) return;
-    if (o.kind === "window" && o.sill >= HEIGHT) return;
+    if (o.kind === "window" && o.sill >= top) return;
     out.push({ label: openingLabel(o) + (o.kind === "door" && o.swing !== "out" ? " (and its swing)" : ""), wall: `o${i}`, ...openingBox(design, o) });
   });
   design.obstacles.forEach((b, i) => {
-    if (b.kind === "soffit" && b.bottom >= HEIGHT) return;
+    if (b.kind === "soffit" && b.bottom >= top) return;
     out.push({ label: b.kind === "column" ? "the column" : `the soffit (${b.bottom}" high)`, wall: `b${i}`, x: [b.x, b.x + b.w], z: [b.z, b.z + b.d] });
   });
   return out;
@@ -650,7 +729,8 @@ export function collisions(design) {
   }
   const boxes = footprints(design);
   const hasCab = boxes.length > 0;
-  if (hasCab && design.ceiling < HEIGHT) out.push(`The ${design.ceiling}" ceiling is lower than the ${HEIGHT}" cabinets.`);
+  const top = cabinetTop(design);
+  if (hasCab && design.ceiling < top) out.push(`The ${design.ceiling}" ceiling is lower than the ${topLabel(design)}.`);
   const hit = (a, b) => a[0] < b[1] - 0.01 && b[0] < a[1] - 0.01;
   const all = [...boxes, ...roomBlocks(design)];
   for (let i = 0; i < all.length; i++) {
@@ -663,10 +743,10 @@ export function collisions(design) {
   if (isCustom(design)) {
     for (const b of boxes) if (!boxInShape(design.shape.pts, b)) out.push(`${b.label[0].toUpperCase()}${b.label.slice(1)} would go through a wall.`);
   }
-  if (design.slope && design.ceiling >= HEIGHT) {
+  if (design.slope && design.ceiling >= top) {
     for (const b of boxes) {
       const low = lowestCeiling(design, b);
-      if (low < HEIGHT - 0.01) out.push(`${b.label[0].toUpperCase()}${b.label.slice(1)} would be under the sloped ceiling (${low}" high there).`);
+      if (low < top - 0.01) out.push(`${b.label[0].toUpperCase()}${b.label.slice(1)} would be under the sloped ceiling (${low}" high there).`);
     }
   }
   return [...new Set(out)];
@@ -683,7 +763,8 @@ export function clashSet(design) {
     design.walls[k].modules.forEach((m, i) => { s += m.w; if (s > g.end + 0.001) out.add(`${k}:${i}`); });
   }
   const boxes = footprints(design);
-  if (boxes.length && design.ceiling < HEIGHT) boxes.forEach((b) => out.add(key(b)));
+  const top = cabinetTop(design);
+  if (boxes.length && design.ceiling < top) boxes.forEach((b) => out.add(key(b)));
   const hit = (a, b) => a[0] < b[1] - 0.01 && b[0] < a[1] - 0.01;
   const all = [...boxes, ...roomBlocks(design)];
   for (let i = 0; i < all.length; i++) {
@@ -694,7 +775,7 @@ export function clashSet(design) {
     }
   }
   if (isCustom(design)) for (const b of boxes) if (!boxInShape(design.shape.pts, b)) out.add(key(b));
-  if (design.slope && design.ceiling >= HEIGHT) for (const b of boxes) if (lowestCeiling(design, b) < HEIGHT - 0.01) out.add(key(b));
+  if (design.slope && design.ceiling >= top) for (const b of boxes) if (lowestCeiling(design, b) < top - 0.01) out.add(key(b));
   return out;
 }
 
@@ -757,6 +838,7 @@ export function decode(text) {
       if (!(d.room.wall in ROOM_WALLS)) d.room.wall = "white";
       if (!(d.room.floor in ROOM_FLOORS)) d.room.floor = "oak";
       if (!(+d.wallT >= WALL_T.min && +d.wallT <= WALL_T.max)) d.wallT = WALL_T.def;
+      if (!(d.crown in CROWNS)) d.crown = null;
       return d;
     }
   } catch { /* ignore */ }

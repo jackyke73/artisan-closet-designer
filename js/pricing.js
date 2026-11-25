@@ -11,6 +11,7 @@ export const PRICE_LIST = {
 function samplePrice(part) {
   const w = +(part.match(/(\d{2})/) || [0, 24])[1];
   if (part === "Closet Kit") return 29;
+  if (part.startsWith("Crown")) return 68;
   if (part.startsWith("Filler")) return 38;
   if (part.startsWith("SO SP")) return part.includes("2490") ? 175 : 135;
   if (part.startsWith("SO CTB")) return 120;

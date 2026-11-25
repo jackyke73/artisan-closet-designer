@@ -2,7 +2,7 @@
 // Plan coordinates match the 3D view: x runs along the back wall, y (the 3D z)
 // comes out from the back wall into the room.
 import { DEPTHS, HEIGHT, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt } from "./design.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, wallLength, WALL_NAMES, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt , cabinetTop } from "./design.js";
 
 let WALL = 4.5;     // drawn wall thickness, set from the design
 const REACH_DEPTH = 30; // drawn depth of a reach-in closet
@@ -252,12 +252,13 @@ export function planHtml(design, selected, { grid = false, clear = true } = {}) 
 
   // sloped ceiling: shade where it is under the cabinet height
   const sl = design.slope;
-  if (sl && sl.knee < HEIGHT && design.ceiling > sl.knee) {
-    const low = Math.min(sl.run, (sl.run * (HEIGHT - sl.knee)) / (design.ceiling - sl.knee));
+  const top = cabinetTop(design);
+  if (sl && sl.knee < top && design.ceiling > sl.knee) {
+    const low = Math.min(sl.run, (sl.run * (top - sl.knee)) / (design.ceiling - sl.knee));
     const zone = sl.wall === "back" ? [0, 0, W, low] : sl.wall === "left" ? [0, 0, low, RD] : [W - low, 0, low, RD];
     out.push(`<rect x="${zone[0]}" y="${zone[1]}" width="${zone[2]}" height="${zone[3]}" class="lowceil"/>`);
     const [tx, ty] = sl.wall === "back" ? [W / 2, low - 2] : [zone[0] + zone[2] / 2, RD / 2];
-    out.push(`<text x="${tx}" y="${ty}" class="note low" ${sl.wall === "back" ? "" : `transform="rotate(-90 ${tx} ${ty})"`}>Ceiling under ${HEIGHT}"</text>`);
+    out.push(`<text x="${tx}" y="${ty}" class="note low" ${sl.wall === "back" ? "" : `transform="rotate(-90 ${tx} ${ty})"`}>Ceiling under ${top}"</text>`);
   }
   // columns and soffits (drawn over the cabinets, see below)
   const over = [];

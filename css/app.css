@@ -148,6 +148,13 @@ h2, h3 { margin: 0; }
 .swatch i.grain { background-image: repeating-linear-gradient(0deg, rgba(0,0,0,.07) 0 1px, transparent 1px 5px); }
 .swatch i.pile { background-image: radial-gradient(rgba(0,0,0,.08) 1px, transparent 1px); background-size: 4px 4px; }
 .swatch.on { border-color: var(--ink); font-weight: 600; }
+.crowns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 6px; }
+.crown-opt { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 12px; cursor: pointer; color: var(--ink); }
+.crown-opt svg { width: 40px; height: 40px; }
+.crown-opt polygon { fill: #d9b98c; stroke: var(--ink); stroke-width: .12; stroke-linejoin: round; }
+.crown-opt .cab { fill: #c39a68; }
+.crown-opt:hover { border-color: var(--ink); }
+.crown-opt.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); font-weight: 600; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 4px; }
 .check input { accent-color: var(--ink); }
 
@@ -194,6 +201,8 @@ h2, h3 { margin: 0; }
 :is(.elev, .mini) .pane { fill: #dfe7e6; stroke: none; }
 :is(.elev, .mini) .handle { stroke: #111; stroke-width: .7; stroke-linecap: round; }
 :is(.elev, .mini) .swing { fill: none; stroke: #9c9488; stroke-width: .25; stroke-dasharray: 1.2 1; }
+.elev .crown rect { fill: #e9dcc6; stroke: var(--ink); stroke-width: .3; }
+.elev .crown line { stroke: var(--ink); stroke-width: .15; opacity: .7; }
 .elev .code { font-size: 3.1px; text-anchor: middle; font-weight: 600; fill: var(--ink); }
 .elev .dim line { stroke: #777; stroke-width: .25; }
 .elev .dim text { font-size: 3px; text-anchor: middle; fill: #555; }

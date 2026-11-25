@@ -1,6 +1,6 @@
 // Front elevation of each wall as SVG, with closet codes and dimensions.
-import { HEIGHT as H, TOE, DRAWER_ZONE, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES, clashSet, isCustom, wallFrame, wallLength } from "./design.js";
+import { HEIGHT as H, TOE, DRAWER_ZONE, cornerByCode, CROWNS } from "./catalog.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, ceilingAt, roomDepth, isWalk, WALL_NAMES, clashSet, isCustom, wallFrame, wallLength, crownPlan } from "./design.js";
 
 const PAD = { l: 34, r: 14, t: 34, b: 52 };
 
@@ -10,7 +10,7 @@ function fmt(inches) {
   return `${n}"${n >= 12 ? ` (${ft}'${rem ? ` ${rem}"` : ""})` : ""}`;
 }
 
-export function drawModule(x, w, look, code, selected) {
+export function drawModule(x, w, look, code, selected, lift = 0) {
   const s = [];
   const y = (v) => H - v; // svg y from floor height
   if (look.filler) {
@@ -55,8 +55,18 @@ export function drawModule(x, w, look, code, selected) {
       s.push(`<path d="M${bx} ${y(H)} L${ax} ${y((H + doorBottom) / 2)} L${bx} ${y(doorBottom)}" class="swing"/>`);
     }
   }
-  s.push(`<text x="${x + w / 2}" y="${y(H) - 4}" class="code">${code}</text>`);
+  s.push(`<text x="${x + w / 2}" y="${y(H) - 4 - lift}" class="code">${code}</text>`);
   return s.join("");
+}
+
+// Crown moulding seen from the front: a band on top of the cabinets, sticking out past an
+// open end by its projection (where it turns back along the side).
+function crownSvg(cr, x0, x1, outLo, outHi) {
+  const a = x0 - (outLo ? cr.proj : 0), b = x1 + (outHi ? cr.proj : 0);
+  const lines = cr.pts.filter(([o, y]) => o > 0 && y > 0.05 && y < cr.h - 0.05).map(([, y]) => y);
+  const steps = [...new Set(lines.map((y) => +y.toFixed(1)))].filter((y, i, l) => i === 0 || y - l[i - 1] > 0.4);
+  return `<g class="crown"><rect x="${a}" y="${-cr.h}" width="${b - a}" height="${cr.h}"/>` +
+    steps.map((y) => `<line x1="${a}" x2="${b}" y1="${-y}" y2="${-y}"/>`).join("") + `</g>`;
 }
 
 function dim(x0, x1, yy, label, cls = "") {
@@ -90,6 +100,9 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   const parts = [];
   const room = [];
   const clash = clashSet(design);
+  const cr = CROWNS[design.crown] || null;
+  const lift = cr ? cr.h : 0;
+  const plan = cr ? crownPlan(design)?.[k] : null;
   let x = geo.start;
   // corner pieces seen from the front
   const corner = (side) => cornerOn(design, side);
@@ -100,7 +113,8 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
     const size = cornerByCode[c.code].size;
     const info = cornerInfo(c);
     const at = k === "back" ? cx : (k === "left" ? 0 : 0);
-    parts.push(`<g class="corner${clash.has(`corner:${side}`) ? " clash" : ""}">${drawModule(at, size, info.look, info.code, false)}</g>`);
+    parts.push(`<g class="corner${clash.has(`corner:${side}`) ? " clash" : ""}">${drawModule(at, size, info.look, info.code, false, lift)}</g>`);
+    if (cr) parts.push(crownSvg(cr, at, at + size, false, false));
     parts.push(dim(at, at + size, H + 10, `${size}"`));
   }
   if (custom) {
@@ -117,7 +131,12 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   wall.modules.forEach((m, i) => {
     const info = moduleInfo(m);
     const sel = selected && selected.wall === k && selected.index === i;
-    parts.push(`<g data-wall="${k}" data-index="${i}" class="mod${clash.has(`${k}:${i}`) ? " clash" : ""}">${drawModule(x, m.w, { ...info.look, hinge: m.hinge }, info.code, sel)}</g>`);
+    parts.push(`<g data-wall="${k}" data-index="${i}" class="mod${clash.has(`${k}:${i}`) ? " clash" : ""}">${drawModule(x, m.w, { ...info.look, hinge: m.hinge }, info.code, sel, lift)}</g>`);
+    if (plan) {
+      // lo is the end at the start of the wall's frame, which is the far end of a reversed run
+      const [l, r] = wallFrame(design, k)?.rev ? [plan[i].hi, plan[i].lo] : [plan[i].lo, plan[i].hi];
+      parts.push(crownSvg(cr, x, x + m.w, l > 0, r > 0));
+    }
     if ((heights === "all" || sel) && !info.look.filler) parts.push(heightMarks(x, m.w, info.look));
     parts.push(dim(x, x + m.w, H + 10, `${m.w}"`));
     x += m.w;
@@ -170,6 +189,8 @@ export function wallSvg(design, k, selected, { heights = "selected" } = {}) {
   }
   parts.push(`<g class="dim"><line x1="-12" x2="-12" y1="0" y2="${H}"/><line x1="-14.5" x2="-9.5" y1="0" y2="0"/><line x1="-14.5" x2="-9.5" y1="${H}" y2="${H}"/>` +
     `<text x="-14" y="${H / 2}" transform="rotate(-90 -14 ${H / 2})">90"</text></g>`);
+  if (cr && wall.modules.length) parts.push(`<g class="dim"><line x1="-12" x2="-12" y1="${-cr.h}" y2="0"/><line x1="-14.5" x2="-9.5" y1="${-cr.h}" y2="${-cr.h}"/>` +
+    `<text x="-15" y="${-cr.h / 2 + 1}" text-anchor="end">crown ${H + cr.h}"</text></g>`);
   const vbW = Math.max(W, x) + PAD.l + PAD.r;
   const extra = Math.max(0, C - H);
   return `<figure class="elev" data-key="elev-${k}"><figcaption>${WALL_NAMES[k]}</figcaption>

@@ -1,5 +1,5 @@
-import { STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
-import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength, isCustom, ROOM_SHAPES, SHAPE_ICONS, applyShape, toCustom, shapeWalls, shapeBox, moveShapeWall, setShapeWallLength, splitShapeWall, wallRef } from "./design.js";
+import { CROWNS, STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
+import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength, isCustom, ROOM_SHAPES, SHAPE_ICONS, applyShape, toCustom, shapeWalls, shapeBox, moveShapeWall, setShapeWallLength, splitShapeWall, wallRef, crownItem, cabinetTop } from "./design.js";
 import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule, wallSvg } from "./elevation.js";
@@ -88,7 +88,7 @@ function commit({ room = false } = {}) {
   const before = lastGood ? collisions(JSON.parse(lastGood).design) : [];
   const now = collisions(D());
   const fresh = now.filter((m) => !before.includes(m));
-  if (room && fresh.length) toast(`Heads up: ${fresh[0].replace(" would be ", " is ").replace(" would hit ", " hits ")} Move or remove that module.`);
+  if (room && fresh.length) toast(`Heads up: ${fresh[0].replace(" would be ", " is ").replace(" would hit ", " hits ")} ${fresh[0].includes("crown moulding") ? "Pick a shorter crown or none." : "Move or remove that module."}`);
   else if (lastGood && fresh.length) {
     const s = JSON.parse(lastGood);
     ui.design = s.design; // keep the wall tab the customer is on
@@ -188,7 +188,7 @@ function renderSpace() {
     ${walk ? `<label class="field"><span>Room depth (side walls)</span>
       ${num(`min="36" max="400" step="0.25" data-roomd`, d.walls.left.width)}<small>${ftIn(d.walls.left.width)}</small></label>` : ""}
     <label class="field"><span>Ceiling height</span>
-      ${num(`min="${CEILING.min}" max="${CEILING.max}" step="0.25" data-ceiling`, d.ceiling)}<small>${d.ceiling < HEIGHT ? `<b class="bad">Under the ${HEIGHT}" cabinets</b>` : ftIn(d.ceiling)}</small></label>
+      ${num(`min="${CEILING.min}" max="${CEILING.max}" step="0.25" data-ceiling`, d.ceiling)}<small>${d.ceiling < cabinetTop(d) ? `<b class="bad">Under the ${cabinetTop(d)}" cabinets${d.crown ? " with crown" : ""}</b>` : ftIn(d.ceiling)}</small></label>
     <label class="field"><span>Wall thickness</span>
       ${num(`min="${WALL_T.min}" max="${WALL_T.max}" step="0.25" data-wallthick`, d.wallT)}<small>Drywall over 2×4 studs is about 4.5"</small></label>`;
   const depthInputs = walls().map((k) => {
@@ -360,7 +360,19 @@ function renderModules() {
       ${fillerBtn}
       <h3>On this wall</h3>
       ${list ? `<ul class="mods">${list}</ul>` : `<p class="empty">No modules yet. Pick one above and add it.</p>`}
+      ${crownHtml(d)}
     </section>`;
+}
+
+// Crown moulding picker: none or one of the profiles, each with its shape drawn small.
+function crownHtml(d) {
+  const item = crownItem(d);
+  const prof = (cr) => `<svg viewBox="-1.9 -0.4 4.8 4.8" aria-hidden="true"><rect x="-1.9" y="4" width="1.9" height="0.4" class="cab"/>` +
+    `<polygon points="${cr.pts.map(([o, y]) => `${o},${4 - y}`).join(" ")}"/></svg>`;
+  const btn = (id, label, icon, note) => `<button class="crown-opt ${(d.crown || "") === id ? "on" : ""}" data-crown="${id}" title="${esc(note)}">${icon}<span>${label}</span></button>`;
+  return `<h3>Crown moulding <small>${item ? `${money(item.price)} · ${Math.ceil(item.inches / 12)} ft` : "optional"}</small></h3>
+    <div class="crowns">${btn("", "None", `<svg viewBox="-1.9 -0.4 4.8 4.8" aria-hidden="true"><rect x="-1.9" y="4" width="1.9" height="0.4" class="cab"/></svg>`, "No crown moulding")}${Object.entries(CROWNS).map(([k, cr]) => btn(k, cr.name, prof(cr), `${cr.name}: ${cr.note}, ${cr.h}" tall`)).join("")}</div>
+    <p class="tiny">${d.crown ? `${CROWNS[d.crown].name} crown runs along the tops of all the cabinets in the cabinet finish and turns back along open ends. It adds ${CROWNS[d.crown].h}", so the closet is ${cabinetTop(d)}" tall and needs a ceiling at least that high.` : `Finishes the tops of the cabinets in the cabinet finish. Adds 2¾" to 4" to the height.`}</p>`;
 }
 
 // ---- summary ---------------------------------------------------------------------------
@@ -376,7 +388,7 @@ function renderSummary() {
       ${PRICES_ARE_SAMPLE ? `<small class="sample">Sample prices for the demo. Final pricing confirmed by Artisan.</small>` : ""}</div>
     ${warn.length ? `<div class="warn-box"><b>⚠ ${warn.length === 1 ? "1 problem" : `${warn.length} problems`} to fix before ordering</b>${warn.map((w) => `<p class="warn">${esc(w)}</p>`).join("")}<small>Cabinets in red overlap something. Undo, move or remove them.</small></div>` : ""}
     <button class="btn primary full" id="sendBtn2" ${items.length ? "" : "disabled"}>Send design to Artisan</button>
-    <h3>Your closet <small>${items.length} module${items.length === 1 ? "" : "s"}</small></h3>
+    <h3>Your closet <small>${items.filter((it) => !it.crown).length} module${items.filter((it) => !it.crown).length === 1 ? "" : "s"}</small></h3>
     <ul class="lines">${items.map((it) => `<li><span><b>${it.code}</b><i>${esc(it.wall)} · ${esc(it.name)}</i></span><em>${money(it.price)}</em></li>`).join("") || `<li class="empty">Nothing added yet.</li>`}</ul>
     <details><summary>Parts list (${parts.reduce((a, p) => a + p.qty, 0)} parts)</summary>
       <table class="parts"><thead><tr><th>Part</th><th>Qty</th><th>Total</th></tr></thead>
@@ -764,6 +776,7 @@ $("#panel").addEventListener("click", (e) => {
   if (b.dataset.delob) { d.obstacles.splice(+b.dataset.delob, 1); return commit({ room: true }); }
   if (b.dataset.act === "interior") { const li = b.closest(".mods li"); return openInterior({ wall: ui.wall, index: +li.dataset.index }); }
   if (b.dataset.wallcolor) { d.room.wall = b.dataset.wallcolor; return commit(); }
+  if (b.dataset.crown !== undefined) { d.crown = b.dataset.crown || null; return commit(); }
   if (b.dataset.floor) { d.room.floor = b.dataset.floor; return commit(); }
   if (b.dataset.wall) {
     ui.wall = b.dataset.wall; ui.selected = null;

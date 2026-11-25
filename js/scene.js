@@ -6,8 +6,32 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import { fmtIn } from "./units.js";
 import { hangClothes, shelfItems, shoePair, rug as decorRug, ottoman as decorOttoman } from "./decor.js";
-import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode } from "./catalog.js";
-import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet, isCustom, shapeWalls, shapeBox, insideCornerAt, insideShape, boxInShape, wallFrame, WALL_NAMES } from "./design.js";
+import { HEIGHT as H, TOE, T, DRAWER_ZONE, DEPTHS, cornerByCode, CROWNS } from "./catalog.js";
+import { activeWalls, wallGeometry, moduleInfo, cornerInfo, cornerOn, roomDepth, isWalk, ceilingAt, wallLength, ROOM_WALLS, ROOM_FLOORS, clashSet, crownPlan, isCustom, shapeWalls, shapeBox, insideCornerAt, insideShape, boxInShape, wallFrame, WALL_NAMES } from "./design.js";
+
+// A length of crown moulding: runs along +x from 0 to L, its profile stepping out along +z
+// and up along +y. mA / mB cut the ends at 45°: 1 for an outside corner, 0 for a square end.
+const CROWN_GEO = {};
+function crownGeo(id, L, mA, mB) {
+  const key = `${id}|${L.toFixed(2)}|${mA}|${mB}`;
+  if (CROWN_GEO[key]) return CROWN_GEO[key];
+  const sh = new THREE.Shape(CROWNS[id].pts.map(([o, y]) => new THREE.Vector2(o, y)));
+  const g = new THREE.ExtrudeGeometry(sh, { depth: L, bevelEnabled: false, curveSegments: 4 });
+  g.rotateY(-Math.PI / 2); // shape x (out) -> +z, extrusion -> -x
+  g.translate(L, 0, 0);
+  const p = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    let x = p.getX(i);
+    const z = p.getZ(i);
+    if (x < 0.001) x = -z * mA;
+    else if (x > L - 0.001) x = L + z * mB;
+    p.setX(i, x);
+    uv.setXY(i, x / 30, (p.getY(i) + z) / 6); // wood grain along the length
+  }
+  g.computeVertexNormals();
+  g.userData.shared = true;
+  return (CROWN_GEO[key] = g);
+}
 
 // Turn a group built along +x (out of the wall along +z) onto a wall frame, `t` along it.
 function onFrame(o, f, t) {
@@ -331,11 +355,13 @@ export class ClosetScene {
     const layout = isWalk(design) || custom ? "walk" : "reach";
     if (custom) this._roomCustom(design, W, sideLen); else this._room(design, W, sideLen);
     const clash = clashSet(design);
+    const crowns = crownPlan(design);
 
     const place = (k, m, i, s) => {
       const info = moduleInfo(m);
       const d = DEPTHS[m.depth].inches;
       const g = this._module(info.look, m.w, d, { hinge: m.hinge, doorsOpen, seed: i * 31 + k.length });
+      if (crowns) this._crown(g, design.crown, crowns[k][i]);
       g.userData.pick = { wall: k, index: i };
       if (custom) onFrame(g, wallFrame(design, k), s);
       else if (k === "back") g.position.set(s, 0, 0);
@@ -353,6 +379,7 @@ export class ClosetScene {
       const c = cornerOn(design, side);
       if (c) {
         const g = this._corner(c, side === "right" ? W : null, doorsOpen);
+        if (crowns) this._cornerCrown(g, design.crown, c, side === "right" ? W : null);
         g.userData.pick = { wall: side, corner: true };
         this.root.add(g);
         if (clash.has(`corner:${side}`)) this._clashMark(g);
@@ -1277,6 +1304,40 @@ export class ClosetScene {
   }
 
   // L-shaped easy-reach corner. Built for the back-left corner; `mirrorAt` mirrors it to x = mirrorAt - x.
+  // Crown along a module's front, turning back along any open side. `p` is from crownPlan.
+  _crown(g, id, { w, d, lo, hi, cutLo = 0, cutHi = 0 }) {
+    const add = (geo, x, z, ry) => {
+      const m = new THREE.Mesh(geo, this.mat.oakH);
+      m.position.set(x, H, z);
+      m.rotation.y = ry;
+      m.castShadow = m.receiveShadow = true;
+      g.add(m);
+    };
+    const front = d + T;
+    if (w - cutLo - cutHi > 0.5) add(crownGeo(id, w - cutLo - cutHi, lo > 0 && !cutLo ? 1 : 0, hi > 0 && !cutHi ? 1 : 0), cutLo, front, 0);
+    // a return runs from where the side opens up to the front, mitered at the front
+    const from = (open) => (open >= d - 0.01 ? 0 : d - open + T);
+    if (lo > 0) add(crownGeo(id, front - from(lo), 0, 1), 0, from(lo), -Math.PI / 2);
+    if (hi > 0) add(crownGeo(id, front - from(hi), 1, 0), w, front, Math.PI / 2);
+  }
+
+  // Crown across the two open faces of an L corner unit (built for the back-left corner).
+  _cornerCrown(g, id, corner, mirrorAt) {
+    const spec = cornerByCode[corner.code];
+    const S = spec.size, d = DEPTHS[spec.depth].inches;
+    const back = -CROWNS[id].pts.reduce((a, [o]) => Math.min(a, o), 0);
+    const len = S - d - T + back;
+    const grp = new THREE.Group();
+    const a = new THREE.Mesh(crownGeo(id, len, 0, 0), this.mat.oakH); // along x, facing +z
+    a.position.set(d + T - back, H, d + T);
+    const b = new THREE.Mesh(crownGeo(id, len, 0, 0), this.mat.oakH); // along z, facing +x
+    b.rotation.y = Math.PI / 2;
+    b.position.set(d + T, H, S);
+    for (const m of [a, b]) { m.castShadow = m.receiveShadow = true; grp.add(m); }
+    if (mirrorAt != null) { grp.scale.x = -1; grp.position.x = mirrorAt; }
+    g.add(grp);
+  }
+
   _corner(corner, mirrorAt, doorsOpen) {
     const g = new THREE.Group();
     const spec = cornerByCode[corner.code];
