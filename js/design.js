@@ -1,5 +1,5 @@
 // The design: room, walls, modules, corners. Pure data and math, no DOM.
-import { DEPTHS, HEIGHT, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS, FILLER_MAX, FILLER_MIN, clampFiller, customLook, customParts, customCode, customName, normalizeCustom, customFromLook, STYLES, CROWNS, CROWN_STICK } from "./catalog.js";
+import { DEPTHS, HEIGHT, styleById, cornerByCode, cornerParts, cornerCode, CORNER_INTERIORS, FILLER_MAX, FILLER_MIN, clampFiller, customLook, customParts, customCode, customName, normalizeCustom, customFromLook, STYLES, CROWNS, CROWN_STICK, WIDTHS } from "./catalog.js";
 import { priceOf } from "./pricing.js";
 
 // A reach-in has cabinets on its back wall only. A walk-in can have cabinets
@@ -312,7 +312,8 @@ export function toCustom(design) {
     const id = ids[i];
     const mods = was.includes(k) ? old.walls[k].modules : [];
     // the left wall's run was measured from the back; custom walls run the other way
-    design.walls[id].modules = k === "left" ? [...mods].reverse() : [...mods];
+    const copy = JSON.parse(JSON.stringify(mods)); // the box room keeps its own copy for going back
+    design.walls[id].modules = k === "left" ? copy.reverse() : copy;
     if (k === "left") design.walls[id].align = "end";
     if (old.walls[k]?.depth) design.walls[id].depth = old.walls[k].depth;
     design.cab[id] = was.includes(k);
@@ -349,10 +350,10 @@ const lowestCeiling = (design, b) => Math.min(...[b.x[0], b.x[1]].flatMap((x) =>
 export function openingBox(design, o) {
   if (isCustom(design)) {
     const f = wallFrame(design, o.wall);
-    return f ? wallBox(f, o.at, o.w, o.kind === "door" && o.swing !== "out" ? Math.min(o.w, 36) : 1) : { x: [0, 0], z: [0, 0] };
+    return f ? wallBox(f, o.at, o.w, o.kind === "door" && o.swing !== "out" ? o.w : 1) : { x: [0, 0], z: [0, 0] };
   }
   const W = design.walls.back.width, RD = roomDepth(design);
-  const reach = o.kind === "door" && o.swing !== "out" ? Math.min(o.w, 36) : 1;
+  const reach = o.kind === "door" && o.swing !== "out" ? o.w : 1; // the leaf sweeps its own width into the room
   const a = [o.at, o.at + o.w];
   if (o.wall === "back") return { x: a, z: [0, reach] };
   if (o.wall === "left") return { x: [0, reach], z: a };
@@ -652,11 +653,12 @@ export function crownPlan(design) {
     plan[k] = design.walls[k].modules.map((m, i) => {
       const d = depthOf(m);
       const open = (along) => {
-        for (let out = d - 0.25; out > 0; out -= 0.5) {
+        // sizes are in quarter inches, so sample in the middle of each quarter
+        for (let out = d - 0.125; out > 0; out -= 0.25) {
           const [x, z] = onWall(f, s, m.w, along, out);
           const covered = !inRoom(x, z) || cols.some((b) => inBox(b, x, z)) ||
             boxes.some((b) => !(b.wall === k && b.index === i) && inBox(b, x, z));
-          if (covered) { const o = d - out - 0.25; return o < 0.5 ? 0 : +o.toFixed(2); }
+          if (covered) { const o = d - out - 0.125; return o < 0.5 ? 0 : +o.toFixed(2); }
         }
         return d;
       };
@@ -665,7 +667,7 @@ export function crownPlan(design) {
       const other = (x, z) => boxes.some((b) => b.wall !== k && inBox(b, x, z));
       const trim = (from, dir) => {
         let a = 0;
-        while (a < m.w && other(...onWall(f, s, m.w, from + dir * (a + 0.25), d + 0.5))) a += 0.5;
+        while (a < m.w && other(...onWall(f, s, m.w, from + dir * (a + 0.125), d + 0.5))) a += 0.25;
         return a > 0 ? Math.max(0, a + 0.75 - back) : 0;
       };
       const cutLo = trim(0, 1), cutHi = trim(m.w, -1);
@@ -674,6 +676,23 @@ export function crownPlan(design) {
       s += m.w;
       return r;
     });
+  }
+  // corner units: the two ends of the L are open unless a cabinet stands beside them
+  plan.corners = {};
+  for (const side of ["left", "right"]) {
+    const c = cornerOn(design, side);
+    if (!c) continue;
+    const cc = cornerByCode[c.code], S = cc.size, d = DEPTHS[cc.depth].inches;
+    const mx = (x) => (side === "left" ? x : W - x);
+    const covered = (x, z) => !inRoom(x, z) || cols.some((b) => inBox(b, x, z)) || boxes.some((b) => b.wall !== `c${side}` && inBox(b, x, z));
+    const open = (at) => {
+      for (let out = d - 0.125; out > 0; out -= 0.25) {
+        if (covered(...at(out))) { const o = d - out - 0.125; return o < 0.5 ? 0 : +o.toFixed(2); }
+      }
+      return d;
+    };
+    // a: the end facing along the back wall; b: the end facing along the side wall
+    plan.corners[side] = { size: S, d, a: open((out) => [mx(S + 0.5), out]), b: open((out) => [mx(out), S + 0.5]) };
   }
   return plan;
 }
@@ -685,11 +704,8 @@ export function crownItem(design) {
   const plan = crownPlan(design);
   if (!cr || !plan) return null;
   let inches = 0;
-  for (const k of Object.keys(plan)) for (const p of plan[k]) inches += p.w - p.cutLo - p.cutHi + p.lo + p.hi;
-  for (const side of ["left", "right"]) {
-    const c = cornerOn(design, side);
-    if (c) { const cc = cornerByCode[c.code]; inches += 2 * (cc.size - DEPTHS[cc.depth].inches); }
-  }
+  for (const k of activeWalls(design)) for (const p of plan[k]) inches += Math.max(0, p.w - p.cutLo - p.cutHi) + p.lo + p.hi;
+  for (const c of Object.values(plan.corners)) inches += 2 * (c.size - c.d) + c.a + c.b;
   if (inches <= 0) return null;
   const sticks = Math.ceil((inches * 1.1) / CROWN_STICK);
   const parts = [[cr.part, sticks]];
@@ -752,6 +768,19 @@ export function collisions(design) {
   return [...new Set(out)];
 }
 
+// The problems in `now` that a change made: ones that were not there before, or a wall that
+// is over by more than it was. A wall that is still too full but less so is not a new problem,
+// so removing or narrowing a cabinet on it goes through.
+export function newProblems(before, now) {
+  const over = (m) => { const x = /^(.*) would be over by ([\d.]+)"\.$/.exec(m); return x ? [x[1], +x[2]] : null; };
+  const was = new Map(before.map(over).filter(Boolean));
+  return now.filter((m) => {
+    const o = over(m);
+    if (o) return !was.has(o[0]) || o[1] > was.get(o[0]) + 0.001;
+    return !before.includes(m);
+  });
+}
+
 // Which cabinets are in trouble, for drawing them red: "back:2", "corner:left".
 export function clashSet(design) {
   const out = new Set();
@@ -787,60 +816,119 @@ export function problems(design) {
 export function encode(design) {
   return btoa(unescape(encodeURIComponent(JSON.stringify(design))));
 }
+
+// A link or saved design comes from outside the app, so nothing in it is trusted: decode()
+// rebuilds the design field by field. Anything it can't make sense of is dropped or put back
+// to its default; text only gets through if it is one of the app's own keys, and every
+// number is a real number within the sizes the app allows.
+const own = (o, k) => typeof k === "string" && Object.hasOwn(o, k);
+const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const num = (v, lo, hi, def) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def);
+const nearest = (list, v) => list.reduce((a, w) => (Math.abs(w - v) < Math.abs(a - v) ? w : a));
+export const LIMITS = { wall: [15, 400], modules: 60, openings: 40, obstacles: 40, shapeWalls: 40, coord: 2400 };
+
+function cleanModule(m) {
+  if (!isObj(m)) return null;
+  const custom = isObj(m.custom) ? normalizeCustom(m.custom) : null;
+  if (!own(styleById, m.style) && !custom) return null;
+  const style = own(styleById, m.style) ? m.style : "5s";
+  const s = styleById[style];
+  const out = { style, w: 0, depth: own(DEPTHS, m.depth) ? m.depth : "S", hinge: m.hinge === "R" ? "R" : "L" };
+  if (s.filler) { out.w = clampFiller(num(m.w, 0, 1000, FILLER_MIN)); return out; }
+  if (custom) out.custom = custom;
+  else if (!s.depths.includes(out.depth)) out.depth = s.depths[0];
+  const widths = custom ? WIDTHS : s.widths;
+  out.w = nearest(widths, num(m.w, 0, 1000, widths[0]));
+  return out;
+}
+function cleanWall(w, defWidth) {
+  const o = isObj(w) ? w : {};
+  const out = {
+    width: num(o.width, LIMITS.wall[0], LIMITS.wall[1], defWidth),
+    modules: (Array.isArray(o.modules) ? o.modules : []).slice(0, LIMITS.modules).map(cleanModule).filter(Boolean),
+  };
+  if (own(DEPTHS, o.depth)) out.depth = o.depth;
+  if (o.align === "end") out.align = "end";
+  return out;
+}
+function cleanShape(sh) {
+  if (!isObj(sh) || !Array.isArray(sh.pts) || !Array.isArray(sh.ids)) return null;
+  const N = sh.pts.length;
+  if (N < 4 || N > LIMITS.shapeWalls || sh.ids.length !== N) return null;
+  const pts = [];
+  for (const p of sh.pts) {
+    if (!Array.isArray(p) || p.length !== 2 || !p.every((v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= LIMITS.coord)) return null;
+    pts.push([+p[0].toFixed(3), +p[1].toFixed(3)]);
+  }
+  if (!sh.ids.every((k) => isShapeWall(k) && k.length <= 7) || new Set(sh.ids).size !== N || !shapeOk(pts)) return null;
+  const out = { pts, ids: [...sh.ids], next: Math.max(num(sh.next, 0, 1e6, 0) | 0, ...sh.ids.map((k) => +k.slice(1) + 1)) };
+  if (Array.isArray(sh.lead)) out.lead = sh.lead.filter((k) => out.ids.includes(k));
+  return out;
+}
+function cleanCorner(c) {
+  if (!isObj(c) || !own(cornerByCode, c.code)) return null;
+  const interior = CORNER_INTERIORS.find((i) => i.id === c.interior && (!i.only || i.only === c.code));
+  return interior ? { code: c.code, interior: interior.id } : null;
+}
+// Keep a window or door on its wall and within sensible sizes. Changes `o` in place.
+export function tidyOpening(design, o) {
+  const def = OPENING_DEFAULTS[o.kind];
+  const len = wallLength(design, o.wall);
+  o.w = Math.min(num(o.w, 12, LIMITS.wall[1], def.w), Math.max(1, len));
+  o.h = num(o.h, 12, CEILING.max, def.h);
+  o.sill = o.kind === "door" ? 0 : num(o.sill, 0, CEILING.max, def.sill);
+  o.at = +num(o.at, 0, Math.max(0, len - o.w), 0).toFixed(2);
+  o.swing = o.swing === "out" ? "out" : "in";
+  return o;
+}
+// Keep a column or soffit to sensible sizes. Changes `b` in place.
+export function tidyObstacle(b) {
+  const def = OBSTACLE_DEFAULTS[b.kind];
+  b.x = num(b.x, 0, LIMITS.coord, 0);
+  b.z = num(b.z, 0, LIMITS.coord, 0);
+  b.w = num(b.w, 1, LIMITS.wall[1], def.w);
+  b.d = num(b.d, 1, LIMITS.wall[1], def.d);
+  if (b.kind === "soffit") b.bottom = num(b.bottom, 0, CEILING.max, def.bottom); else delete b.bottom;
+  return b;
+}
+
 export function decode(text) {
-  try {
-    const d = JSON.parse(decodeURIComponent(escape(atob(text))));
-    if (d && d.walls && d.walls.back && (d.layout || d.type)) {
-      // designs saved before walk-ins could take any wall mix
-      if (d.layout) {
-        const old = { reach: "reach", L: "Lleft", U: "U" }[d.layout] || "reach";
-        d.type = PRESETS[old].type;
-        d.cab = Object.fromEntries(SIDES.map((k) => [k, PRESETS[old].cab.includes(k)]));
-        delete d.layout;
-      }
-      const custom = d.type === "custom" && d.shape && Array.isArray(d.shape.pts) && Array.isArray(d.shape.ids) &&
-        d.shape.pts.length === d.shape.ids.length && d.shape.ids.every(isShapeWall) && shapeOk(d.shape.pts);
-      if (!custom && d.type !== "walk") d.type = "reach";
-      const cab0 = d.cab || {};
-      d.cab = Object.fromEntries(SIDES.map((k) => [k, !!cab0[k]]));
-      if (custom) {
-        d.shape.next = Math.max(+d.shape.next || 0, ...d.shape.ids.map((k) => +k.slice(1) + 1));
-        for (const k of d.shape.ids) {
-          d.cab[k] = !!cab0[k];
-          d.walls[k] = d.walls[k] || { width: 0, modules: [] };
-          d.walls[k].modules = (d.walls[k].modules || []).filter((m) => m && (styleById[m.style] || m.custom));
-          for (const m of d.walls[k].modules) {
-            if (m.custom) m.custom = normalizeCustom(m.custom);
-            if (!styleById[m.style]) m.style = "5s";
-          }
-        }
-        d.obstacles = Array.isArray(d.obstacles) ? d.obstacles : [];
-        d.openings = Array.isArray(d.openings) ? d.openings : [];
-        syncShapeWalls(d);
-      } else delete d.shape;
-      for (const k of SIDES) {
-        d.walls[k] = d.walls[k] || { width: 72, modules: [] };
-        d.walls[k].modules = (d.walls[k].modules || []).filter((m) => m && (styleById[m.style] || m.custom));
-        for (const m of d.walls[k].modules) {
-          if (m.custom) m.custom = normalizeCustom(m.custom);
-          if (!styleById[m.style]) m.style = "5s";
-        }
-      }
-      const depth = Math.max(+d.walls.left.width || 72, +d.walls.right.width || 72);
-      d.walls.left.width = d.walls.right.width = depth;
-      d.corners = d.corners || { left: null, right: null };
-      if (!(+d.ceiling >= CEILING.min && +d.ceiling <= CEILING.max)) d.ceiling = CEILING.def;
-      d.openings = Array.isArray(d.openings) ? d.openings.filter((o) => o && o.kind in OPENING_DEFAULTS && (custom ? d.shape.ids.includes(o.wall) : o.wall in BASE_NAMES)) : [];
-      d.obstacles = Array.isArray(d.obstacles) ? d.obstacles.filter((o) => o && o.kind in OBSTACLE_DEFAULTS) : [];
-      if (custom || (d.slope && !(SIDES.includes(d.slope.wall) && d.slope.run > 0))) d.slope = null;
-      const r = d.room || {};
-      d.room = { ...defaultRoom(), ...r };
-      if (!(d.room.wall in ROOM_WALLS)) d.room.wall = "white";
-      if (!(d.room.floor in ROOM_FLOORS)) d.room.floor = "oak";
-      if (!(+d.wallT >= WALL_T.min && +d.wallT <= WALL_T.max)) d.wallT = WALL_T.def;
-      if (!(d.crown in CROWNS)) d.crown = null;
-      return d;
-    }
-  } catch { /* ignore */ }
-  return null;
+  let raw;
+  try { raw = JSON.parse(decodeURIComponent(escape(atob(text)))); } catch { return null; }
+  if (!isObj(raw) || !isObj(raw.walls) || !isObj(raw.walls.back) || !(raw.layout || raw.type)) return null;
+  const d = defaultDesign();
+  // designs saved before walk-ins could take any wall mix
+  const old = typeof raw.layout === "string" ? PRESETS[{ reach: "reach", L: "Lleft", U: "U" }[raw.layout] || "reach"] : null;
+  const shape = !old && raw.type === "custom" ? cleanShape(raw.shape) : null;
+  d.type = old ? old.type : shape ? "custom" : raw.type === "walk" ? "walk" : "reach";
+  const cab0 = isObj(raw.cab) ? raw.cab : {};
+  d.cab = Object.fromEntries(SIDES.map((k) => [k, old ? old.cab.includes(k) : cab0[k] === true]));
+  d.walls = {};
+  for (const k of SIDES) d.walls[k] = cleanWall(raw.walls[k], k === "back" ? 96 : 72);
+  d.walls.left.width = d.walls.right.width = Math.max(d.walls.left.width, d.walls.right.width);
+  if (shape) {
+    d.shape = shape;
+    for (const k of shape.ids) { d.cab[k] = cab0[k] === true; d.walls[k] = cleanWall(raw.walls[k], 0); }
+    syncShapeWalls(d);
+  }
+  // a room always has cabinets on at least one wall
+  if (!activeWalls(d).length) d.cab[shape ? shape.ids[0] : "back"] = true;
+  const corners = isObj(raw.corners) ? raw.corners : {};
+  d.corners = { left: cleanCorner(corners.left), right: cleanCorner(corners.right) };
+  const room = isObj(raw.room) ? raw.room : {};
+  d.room = { wall: own(ROOM_WALLS, room.wall) ? room.wall : "white", floor: own(ROOM_FLOORS, room.floor) ? room.floor : "oak", decor: room.decor !== false };
+  d.crown = own(CROWNS, raw.crown) ? raw.crown : null;
+  d.wallT = num(raw.wallT, WALL_T.min, WALL_T.max, WALL_T.def);
+  d.ceiling = typeof raw.ceiling === "number" && raw.ceiling >= CEILING.min && raw.ceiling <= CEILING.max ? raw.ceiling : CEILING.def;
+  const sl = raw.slope;
+  d.slope = !shape && isObj(sl) && SIDES.includes(sl.wall) && typeof sl.run === "number" && sl.run > 0 && typeof sl.knee === "number" && Number.isFinite(sl.knee)
+    ? { wall: sl.wall, knee: num(sl.knee, 0, CEILING.max, 48), run: num(sl.run, 1, LIMITS.wall[1], 36) } : null;
+  const onRoom = (k) => (shape ? shape.ids.includes(k) : own(BASE_NAMES, k));
+  d.openings = (Array.isArray(raw.openings) ? raw.openings : []).slice(0, LIMITS.openings)
+    .filter((o) => isObj(o) && own(OPENING_DEFAULTS, o.kind) && onRoom(o.wall))
+    .map((o) => tidyOpening(d, { wall: o.wall, kind: o.kind, w: o.w, h: o.h, sill: o.sill, swing: o.swing, at: o.at }));
+  d.obstacles = (Array.isArray(raw.obstacles) ? raw.obstacles : []).slice(0, LIMITS.obstacles)
+    .filter((b) => isObj(b) && own(OBSTACLE_DEFAULTS, b.kind))
+    .map((b) => tidyObstacle({ kind: b.kind, x: b.x, z: b.z, w: b.w, d: b.d, bottom: b.bottom }));
+  return d;
 }

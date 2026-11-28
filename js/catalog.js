@@ -244,15 +244,21 @@ export function customFromLook(look) {
   return normalizeCustom(c);
 }
 
+// Heights from the floor, as clean numbers inside the cabinet.
+const heights = (list, max) => [...new Set((Array.isArray(list) ? list : [])
+  .map((y) => (typeof y === "number" || typeof y === "string" ? +(+y).toFixed(2) : NaN))
+  .filter((y) => Number.isFinite(y) && y > 0 && y < HEIGHT))].slice(0, max);
+
 export function normalizeCustom(c) {
-  const shelves = [...new Set((c.shelves || []).map((y) => +(+y).toFixed(2)))];
-  if (c.drawers && !shelves.includes(DRAWER_TOP)) shelves.push(DRAWER_TOP);
+  const drawers = !!c.drawers && !c.shoe;
+  const shelves = heights(c.shelves, 2 * MAX_SHELVES);
+  if (drawers && !shelves.includes(DRAWER_TOP)) shelves.push(DRAWER_TOP); // the fixed shelf over the drawers
   return {
     doors: c.doors === "solid" || c.doors === "glass" ? c.doors : null,
-    drawers: !!c.drawers && !c.shoe,
+    drawers,
     shoe: !!c.shoe,
-    shelves: shelves.filter((y) => !(y === DRAWER_TOP && !c.drawers)).sort((a, b) => a - b),
-    rods: [...new Set((c.rods || []).map((y) => +(+y).toFixed(2)))].sort((a, b) => a - b),
+    shelves: shelves.sort((a, b) => a - b),
+    rods: heights(c.rods, MAX_SHELVES).sort((a, b) => a - b),
   };
 }
 

@@ -1,5 +1,5 @@
-import { CROWNS, STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS } from "./catalog.js";
-import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength, isCustom, ROOM_SHAPES, SHAPE_ICONS, applyShape, toCustom, shapeWalls, shapeBox, moveShapeWall, setShapeWallLength, splitShapeWall, wallRef, crownItem, cabinetTop } from "./design.js";
+import { CROWNS, STYLES, GROUPS, DEPTHS, WIDTHS, CORNERS, CORNER_INTERIORS, styleById, allowedWidths, fillWidths, HEIGHT, FILLER_MIN, FILLER_MAX, clampFiller, customFromLook, normalizeCustom, customProblems, customLook, customParts, customCode, customName, SNAP, DRAWER_TOP, SHOE_TOP, TOE, T, CUSTOM_SHOE_WIDTHS, ROD_DROP, MIN_GAP } from "./catalog.js";
+import { clashSet, PRESETS, SIDES, WALL_NAMES, ROOM_WALLS, ROOM_FLOORS, defaultDesign, activeWalls, wallGeometry, lineItems, partsList, totalPrice, problems, encode, decode, moduleInfo, cornerInfo, wallDepth, setWallDepth, setModuleDepth, dropTarget, moveModule, fillerPlan, addFillers, collisions, WALL_T, CEILING, OPENING_DEFAULTS, OBSTACLE_DEFAULTS, layoutName, presetKey, applyPreset, roomDepth, isWalk, wallLength, isCustom, ROOM_SHAPES, SHAPE_ICONS, applyShape, toCustom, shapeWalls, shapeBox, moveShapeWall, setShapeWallLength, splitShapeWall, wallRef, crownItem, cabinetTop, tidyOpening, tidyObstacle, newProblems } from "./design.js";
 import { priceOf } from "./pricing.js";
 import { money, PRICES_ARE_SAMPLE } from "./pricing.js";
 import { elevationsHtml, drawModule, wallSvg } from "./elevation.js";
@@ -29,7 +29,7 @@ const ui = {
   view: "3d",
   look: false,
   sketch: false,
-  shots: [], // extra camera angles for the PDF
+  shots: [], // extra camera angles for the PDF: { pose, sketch, doorsOpen }, drawn again when needed
   cut: true,       // 3D: hide walls between the camera and the closet
   dims: false,     // 3D: show sizes
   measure: false,  // measuring tool on
@@ -43,6 +43,11 @@ const ui = {
 const MAX_SHOTS = 6;
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 if (fromHash) history.replaceState(null, "", location.pathname);
+// Opening someone's link must not cost the customer their own saved design: keep it aside.
+const OWN_KEY = `${STORE_KEY}-own`;
+const openedLink = !!(fromHash && saved && encode(saved) !== encode(fromHash));
+if (openedLink) { try { localStorage.setItem(OWN_KEY, encode(saved)); } catch { /* private mode */ } }
+function ownDesign() { try { return decode(localStorage.getItem(OWN_KEY) || ""); } catch { return null; } }
 
 let dragWarned = false;
 const scene = new ClosetScene($("#view3d"), {
@@ -86,8 +91,7 @@ let lastGood = null;
 // Room changes (walls, ceiling, windows…) are kept with a warning; cabinet changes that clash are undone.
 function commit({ room = false } = {}) {
   const before = lastGood ? collisions(JSON.parse(lastGood).design) : [];
-  const now = collisions(D());
-  const fresh = now.filter((m) => !before.includes(m));
+  const fresh = newProblems(before, collisions(D()));
   if (room && fresh.length) toast(`Heads up: ${fresh[0].replace(" would be ", " is ").replace(" would hit ", " hits ")} ${fresh[0].includes("crown moulding") ? "Pick a shorter crown or none." : "Move or remove that module."}`);
   else if (lastGood && fresh.length) {
     const s = JSON.parse(lastGood);
@@ -395,12 +399,15 @@ function renderSummary() {
       <tbody>${parts.map((p) => `<tr><td>${esc(p.part)}</td><td>${p.qty}</td><td>${money(p.total)}</td></tr>`).join("")}</tbody></table>
     </details>
     <div class="side-actions">
+      ${ownDesign() ? `<button class="btn ghost" id="ownBtn" title="The design you had before you opened a shared link">Back to my own design</button>` : ""}
       <button class="btn ghost" id="shareBtn">Copy link to this design</button>
       <button class="btn ghost" id="resetBtn">Start over</button>
     </div>`;
 }
 
 function render() {
+  if (menuAt && !menuOk()) closeMenu();
+  if (ui.selected && !(walls().includes(ui.selected.wall) && D().walls[ui.selected.wall].modules[ui.selected.index])) ui.selected = null;
   $("#panel").innerHTML = renderSpace() + renderModules();
   renderSummary();
   if (ui.view === "3d") scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
@@ -860,9 +867,9 @@ function addObstacle(kind) {
 // Returns the module's new place, or null if it was removed.
 function modAction(at, act, value) {
   const d = D();
-  const mods = d.walls[at.wall].modules;
+  const mods = d.walls[at.wall]?.modules;
   const i = at.index;
-  const m = mods[i];
+  const m = mods?.[i];
   if (!m) return null;
   let to = { ...at };
   if (act === "remove") { mods.splice(i, 1); ui.selected = null; return null; }
@@ -955,17 +962,27 @@ function renderInterior() {
     </div>`;
   $("#ivApply").disabled = probs.length > 0;
 }
-// Put a new shelf or rod in the biggest open space.
+// Put a new shelf or rod in the biggest open space that can take it. Returns false if none can.
 function ivAdd(k) {
   const c = iv.c;
   const lo = c.drawers ? DRAWER_TOP : c.shoe ? SHOE_TOP : TOE + T;
   const marks = [lo, ...c.shelves, ...c.rods, HEIGHT - T].filter((y) => y >= lo).sort((a, b) => a - b);
-  let best = [lo, HEIGHT - T];
-  for (let i = 1; i < marks.length; i++) if (marks[i] - marks[i - 1] > best[1] - best[0]) best = [marks[i - 1], marks[i]];
   const snap = (v) => Math.round(v / SNAP) * SNAP;
-  const y = k === "rods" && best[1] - 3 - best[0] >= 24 ? snap(best[1] - 3) : snap((best[0] + best[1]) / 2);
-  c[k].push(y);
-  iv.c = normalizeCustom(c);
+  const count = customProblems(iv.w, iv.depth, c).length;
+  const gaps = [];
+  for (let i = 1; i < marks.length; i++) if (marks[i] > marks[i - 1]) gaps.push([marks[i - 1], marks[i]]);
+  gaps.sort((p, q) => q[1] - q[0] - (p[1] - p[0]));
+  for (const [a, b] of gaps) {
+    // clothes on a rod above need their hanging space, so stay below it
+    const top = c.rods.includes(b) ? b - ROD_DROP : b;
+    const y = k === "rods" ? snap(Math.min(top, b - 3)) : snap((a + top) / 2);
+    if (y - a < MIN_GAP || b - y < MIN_GAP) continue;
+    const trial = normalizeCustom({ ...c, [k]: [...c[k], y] });
+    if (trial[k].length === c[k].length || customProblems(iv.w, iv.depth, trial).length > count) continue;
+    iv.c = trial;
+    return true;
+  }
+  return false;
 }
 $("#ivBody").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-iv]");
@@ -973,12 +990,16 @@ $("#ivBody").addEventListener("click", (e) => {
   const c = iv.c, k = b.dataset.iv;
   if (k === "doors") c.doors = b.dataset.v || null;
   if (k === "bottom") {
+    if (c.drawers && b.dataset.v !== "drawers") c.shelves = c.shelves.filter((y) => y !== DRAWER_TOP); // the fixed shelf goes with the drawers
     c.drawers = b.dataset.v === "drawers";
     c.shoe = b.dataset.v === "shoe";
     if (c.shoe) { c.shelves = c.shelves.filter((y) => y >= SHOE_TOP); c.rods = c.rods.filter((y) => y >= SHOE_TOP + 24); }
     if (c.drawers) { c.shelves = c.shelves.filter((y) => y > DRAWER_TOP + 1); c.rods = c.rods.filter((y) => y > DRAWER_TOP + 24); }
   }
-  if (k === "add") ivAdd(b.dataset.k);
+  if (k === "add") {
+    if (!ivAdd(b.dataset.k)) toast(b.dataset.k === "rods" ? `No room for another rod: each one needs ${ROD_DROP}" of hanging space below it.` : "No room for another shelf. Move or remove something first.");
+    return renderInterior();
+  }
   if (k === "del") c[b.dataset.k].splice(+b.dataset.i, 1);
   iv.c = normalizeCustom(c);
   renderInterior();
@@ -1100,8 +1121,17 @@ function renderMenu() {
       <button data-cact="remove" class="danger">Remove</button>
     </div>`;
 }
+// The menu's module or corner is still there (the room can change while the menu is open).
+function menuOk() {
+  const at = menuAt, d = D();
+  if (!at) return false;
+  if (at.corner) return !!d.corners[at.wall] && isWalk(d) && d.cab.back && !!d.cab[at.wall];
+  return walls().includes(at.wall) && !!d.walls[at.wall].modules[at.index];
+}
 function menuAct(act, v) {
   const d = D();
+  if (!menuOk()) return closeMenu();
+  if (act === "towall" && !walls().includes(v)) return closeMenu();
   if (menuAt.corner) {
     if (act === "remove") { d.corners[menuAt.wall] = null; closeMenu(); return commit(); }
     if (act === "corner") { const [code, interior] = v.split("|"); d.corners[menuAt.wall] = { code, interior }; }
@@ -1160,14 +1190,14 @@ $("#panel").addEventListener("change", (e) => {
     const k = t.dataset.o;
     if (k === "wall" || k === "swing") o[k] = t.value;
     else o[k] = Math.max(0, +t.value || 0);
-    o.w = Math.max(12, o.w); o.h = Math.max(12, o.h);
-    o.at = Math.min(o.at, Math.max(0, wallLength(d, o.wall) - o.w));
+    tidyOpening(d, o); // stays on its wall, no wider than it, no taller than a ceiling can be
     return commit({ room: true });
   }
   const brow = t.closest("[data-bi]");
   if (brow && t.dataset.b) {
     const b = d.obstacles[+brow.dataset.bi];
     b[t.dataset.b] = Math.max(t.dataset.b === "w" || t.dataset.b === "d" ? 1 : 0, +t.value || 0);
+    tidyObstacle(b);
     return commit({ room: true });
   }
   if (t.dataset.wallthick !== undefined) {
@@ -1176,6 +1206,7 @@ $("#panel").addEventListener("change", (e) => {
   }
   if (t.dataset.walldepth) {
     const k = t.dataset.walldepth;
+    if (!Object.hasOwn(DEPTHS, t.value)) return render();
     const swapped = setWallDepth(d, k, t.value);
     if (ui.wall === k) ui.depth = t.value;
     if (swapped.length) toast(`${[...new Set(swapped)].join(", ")} isn’t made ${DEPTHS[t.value].label}, so the nearest style was used.`);
@@ -1245,7 +1276,7 @@ $("#motionBtn").addEventListener("click", async () => {
 $("#sketchBtn").addEventListener("click", () => { ui.sketch = !ui.sketch; render(); });
 $("#shotBtn").addEventListener("click", () => {
   if (ui.shots.length >= MAX_SHOTS) return toast(`Up to ${MAX_SHOTS} views. Remove one in the send window first.`);
-  ui.shots.push(snapshot());
+  ui.shots.push({ pose: scene.getPose(), sketch: ui.sketch, doorsOpen: ui.doorsOpen });
   render();
   toast(`View ${ui.shots.length} added. It will be in your PDF and sent with your design.`);
 });
@@ -1256,9 +1287,16 @@ $("#shotsField").addEventListener("click", (e) => {
   renderShots();
   render();
 });
+// Pictures of the saved views, taken from the design as it is now.
+function shotImages() {
+  if (!ui.shots.length) return [];
+  const imgs = ui.shots.map((s) => scene.renderPose(D(), { doorsOpen: s.doorsOpen, selected: null, sketch: s.sketch }, s.pose));
+  scene.update(D(), { doorsOpen: ui.doorsOpen, selected: ui.selected, sketch: ui.sketch });
+  return imgs;
+}
 function renderShots() {
   $("#shotsField").innerHTML = ui.shots.length
-    ? `<span class="lbl">Views for your PDF</span><div class="shots">${ui.shots.map((s, i) =>
+    ? `<span class="lbl">Views for your PDF</span><div class="shots">${shotImages().map((s, i) =>
         `<figure><img src="${s}" alt="View ${i + 1}"><button type="button" data-shot="${i}" title="Remove this view">×</button></figure>`).join("")}</div>`
     : `<span class="lbl">Views for your PDF</span><p class="tiny">Tip: use “Add view to PDF” on the 3D view to include more angles. Without it, the current view is used.</p>`;
 }
@@ -1277,10 +1315,23 @@ $("#summary").addEventListener("click", (e) => {
     const url = `${location.origin}${location.pathname}#${encode(D())}`;
     navigator.clipboard?.writeText(url).then(() => toast("Link copied"), () => prompt("Copy this link", url));
   }
+  if (b.id === "ownBtn") {
+    const own = ownDesign();
+    try { localStorage.removeItem(OWN_KEY); } catch { /* ignore */ }
+    if (!own) return render();
+    ui.design = own;
+    ui.selected = null;
+    ui.shots = []; ui.m2 = {}; ui.m2pend = null; ui.vb = {};
+    if (!walls().includes(ui.wall)) ui.wall = walls()[0];
+    lastGood = null; // take it as it was saved
+    commit();
+    return toast("Your own design is back. Undo returns to the shared one.");
+  }
   if (b.id === "resetBtn" && confirm("Start a new design? This clears the current one.")) {
     ui.design = defaultDesign();
     ui.design.walls.back.modules = [];
     ui.selected = null;
+    ui.shots = []; ui.m2 = {}; ui.m2pend = null; ui.vb = {}; // views, measurements and zoom belonged to the old design
     commit();
   }
 });
@@ -1355,7 +1406,7 @@ function autoViews() {
 function printSummary(form) {
   const d = D();
   const date = new Date().toLocaleDateString();
-  const views = [...ui.shots.map((src, i) => ({ src, name: `Your view ${i + 1}` })), ...autoViews()].slice(0, 8);
+  const views = [...shotImages().map((src, i) => ({ src, name: `Your view ${i + 1}` })), ...autoViews()].slice(0, 8);
   const sheets = [];
   sheets.push({ title: "3D views", body: `
     ${form.name ? `<p>${esc(form.name)} · ${esc(form.email || "")} · ${esc(form.phone || "")}</p>` : ""}
@@ -1403,6 +1454,7 @@ function toast(msg) {
 lastGood = snap();
 remember();
 render();
+if (openedLink) toast("This is a shared design. Your own is kept: “Back to my own design” is under the price.");
 
 // Sign-in screen (demo), on top of the designer.
 initAuth();

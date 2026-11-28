@@ -341,6 +341,47 @@ export class ClosetScene {
     return this.renderer.domElement.toDataURL("image/png");
   }
 
+  // The camera as it is now, so the same picture can be taken again after the design changes.
+  getPose() {
+    const c = this.camera;
+    return { look: this.look, flat: c === this.ortho, pos: c.position.toArray(), q: c.quaternion.toArray(), zoom: this.ortho.zoom, halfH: this.halfH, fov: this.persp.fov };
+  }
+  // A picture of `design` from a saved pose. The camera goes back to where it was; the caller
+  // rebuilds the scene afterwards (update), since a pose from inside the room builds it closed.
+  renderPose(design, opts, p) {
+    const keep = { cam: this.camera, pos: this.camera.position.clone(), q: this.camera.quaternion.clone(), target: this.controls.target.clone(),
+      halfH: this.halfH, zoom: this.ortho.zoom, fov: this.persp.fov, look: this.look };
+    this.tween = null;
+    this.look = !!p.look;
+    this._holdFrame = true; // build the room without moving the camera
+    this.update(design, opts);
+    const cam = p.flat ? this.ortho : this.persp;
+    this.camera = cam;
+    if (p.flat) { this.halfH = p.halfH; this._orthoFrustum(); cam.zoom = p.zoom; }
+    else cam.fov = p.fov;
+    cam.position.fromArray(p.pos);
+    cam.quaternion.fromArray(p.q);
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
+    this._cutaway();
+    this.renderer.render(this.scene, cam);
+    const url = this.renderer.domElement.toDataURL("image/png");
+    // put everything back
+    this.look = keep.look;
+    this.halfH = keep.halfH;
+    this.camera = keep.cam;
+    if (keep.cam === this.ortho) this._orthoFrustum();
+    this.ortho.zoom = keep.zoom;
+    this.persp.fov = keep.fov;
+    this.ortho.updateProjectionMatrix();
+    this.persp.updateProjectionMatrix();
+    this.camera.position.copy(keep.pos);
+    this.camera.quaternion.copy(keep.q);
+    this.controls.target.copy(keep.target);
+    this._holdFrame = false;
+    return url;
+  }
+
   // --- build ------------------------------------------------------------------
   update(design, { doorsOpen = false, selected = null, sketch = false } = {}) {
     this._clear();
@@ -379,7 +420,7 @@ export class ClosetScene {
       const c = cornerOn(design, side);
       if (c) {
         const g = this._corner(c, side === "right" ? W : null, doorsOpen);
-        if (crowns) this._cornerCrown(g, design.crown, c, side === "right" ? W : null);
+        if (crowns) this._cornerCrown(g, design.crown, c, side === "right" ? W : null, crowns.corners[side]);
         g.userData.pick = { wall: side, corner: true };
         this.root.add(g);
         if (clash.has(`corner:${side}`)) this._clashMark(g);
@@ -395,7 +436,7 @@ export class ClosetScene {
       const [ex, ez] = this._insidePoint(design);
       this.eye.set(ex, this.eye.y, ez);
     }
-    if (key !== this.frameKey) {
+    if (key !== this.frameKey && !this._holdFrame) {
       this.frameKey = key;
       if (this.look) this._placeEye(); else this._applyView(true);
     }
@@ -1321,19 +1362,26 @@ export class ClosetScene {
     if (hi > 0) add(crownGeo(id, front - from(hi), 1, 0), w, front, Math.PI / 2);
   }
 
-  // Crown across the two open faces of an L corner unit (built for the back-left corner).
-  _cornerCrown(g, id, corner, mirrorAt) {
+  // Crown across the two open faces of an L corner unit (built for the back-left corner),
+  // turning back along either end that has no cabinet beside it. `p` is from crownPlan.
+  _cornerCrown(g, id, corner, mirrorAt, p = { a: 0, b: 0 }) {
     const spec = cornerByCode[corner.code];
     const S = spec.size, d = DEPTHS[spec.depth].inches;
     const back = -CROWNS[id].pts.reduce((a, [o]) => Math.min(a, o), 0);
-    const len = S - d - T + back;
+    const len = S - d - T + back, front = d + T;
     const grp = new THREE.Group();
-    const a = new THREE.Mesh(crownGeo(id, len, 0, 0), this.mat.oakH); // along x, facing +z
-    a.position.set(d + T - back, H, d + T);
-    const b = new THREE.Mesh(crownGeo(id, len, 0, 0), this.mat.oakH); // along z, facing +x
-    b.rotation.y = Math.PI / 2;
-    b.position.set(d + T, H, S);
-    for (const m of [a, b]) { m.castShadow = m.receiveShadow = true; grp.add(m); }
+    const add = (geo, x, z, ry) => {
+      const m = new THREE.Mesh(geo, this.mat.oakH);
+      m.position.set(x, H, z);
+      m.rotation.y = ry;
+      m.castShadow = m.receiveShadow = true;
+      grp.add(m);
+    };
+    const from = (open) => (open >= d - 0.01 ? 0 : d - open + T);
+    add(crownGeo(id, len, 0, p.a > 0 ? 1 : 0), front - back, front, 0);           // along x, facing +z
+    add(crownGeo(id, len, p.b > 0 ? 1 : 0, 0), front, S, Math.PI / 2);            // along z, facing +x
+    if (p.a > 0) add(crownGeo(id, front - from(p.a), 1, 0), S, front, Math.PI / 2); // return on the end at x = S
+    if (p.b > 0) add(crownGeo(id, front - from(p.b), 0, 1), from(p.b), S, 0);       // return on the end at z = S
     if (mirrorAt != null) { grp.scale.x = -1; grp.position.x = mirrorAt; }
     g.add(grp);
   }

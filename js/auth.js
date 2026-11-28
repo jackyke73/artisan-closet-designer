@@ -12,7 +12,10 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export function currentUser() {
-  try { return JSON.parse(localStorage.getItem(USER_KEY) || "null"); } catch { return null; }
+  try {
+    const u = JSON.parse(localStorage.getItem(USER_KEY) || "null");
+    return u && typeof u.email === "string" && EMAIL.test(u.email) ? u : null; // ignore anything that isn't a saved sign-in
+  } catch { return null; }
 }
 function save(user) {
   try { localStorage.setItem(USER_KEY, JSON.stringify(user)); } catch { /* private mode: signed in for this visit only */ }
